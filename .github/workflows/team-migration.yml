@@ -32,8 +32,8 @@ jobs:
         shell: pwsh
         run: |
           ./migration/Migrate-GitHubTeams.ps1 `
-            -SourceOrg '${{ github.event.inputs.source-org }}' `
-            -TargetOrg '${{ github.event.inputs.target-org }}' `
+            -SourcePAT $env:SOURCE_PAT `
+            -TargetPAT $env:TARGET_PAT `
+            -SourceOrg "source-org-name" `
+            -TargetOrg "target-org-name" `
             -UserMappingCsv "./user-map.csv"
-            -SourceToken '${{ secrets.SOURCE_PAT }}' `
-            -TargetToken '${{ secrets.TARGET_PAT }}'
