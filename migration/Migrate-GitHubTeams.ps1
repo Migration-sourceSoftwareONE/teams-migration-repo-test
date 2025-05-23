@@ -1,16 +1,26 @@
 param (
-    [string]$SourceOrg,
-    [string]$TargetOrg,
-    [string]$UserMappingCsv,
-    [string]$SourcePAT,
-    [string]$TargetPAT
+    [Parameter(Mandatory = $true)] [string] $SourceOrg,
+    [Parameter(Mandatory = $true)] [string] $TargetOrg,
+    [Parameter(Mandatory = $true)] [string] $UserMappingCsv,
+    [Parameter(Mandatory = $true)] [string] $SourcePAT,
+    [Parameter(Mandatory = $true)] [string] $TargetPAT
 )
 
-# Load user mappings from CSV
-$userMappings = Import-Csv -Path $UserMappingCsv
+# Authenticate GH CLI for source and target orgs
+function Set-GHAuth($Token) {
+    gh auth login --with-token <<< $Token | Out-Null
+}
 
-# Hashtable to map source team slug -> target team slug
-$newTeams = @{}
+Write-Output "Authenticating to source org..."
+Set-GHAuth $SourcePAT
+Write-Output "Authenticated to source org."
+
+Write-Output "Authenticating to target org..."
+Set-GHAuth $TargetPAT
+Write-Output "Authenticated to target org."
+
+# Load user mappings CSV: columns SourceUsername,Email
+$userMappings = Import-Csv $UserMappingCsv
 
 function Get-MappedUserEmail([string]$sourceUsername) {
     $mapping = $userMappings | Where-Object { $_.'SourceUsername' -eq $sourceUsername }
@@ -18,44 +28,154 @@ function Get-MappedUserEmail([string]$sourceUsername) {
     return $null
 }
 
-# Placeholder functions (you should implement these or import them from your module)
+function Run-GH($args) {
+    $result = gh $args --json slug,name --jq '.' 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warning "gh command failed: gh $args`n$result"
+        return $null
+    }
+    return $result | ConvertFrom-Json
+}
+
+function Get-SourceTeams {
+    gh team list --org $SourceOrg --json slug,name,description,privacy,parent --limit 1000 | ConvertFrom-Json
+}
+
+function Get-TargetTeams {
+    gh team list --org $TargetOrg --json slug,name,description,privacy,parent --limit 1000 | ConvertFrom-Json
+}
+
 function Create-Team {
-    param($Org, $Name, $Description, $Privacy, $ParentTeamSlug)
-    # Implement actual team creation via GitHub CLI or API and return created team object with 'slug' property
+    param (
+        [string] $Org,
+        [string] $Name,
+        [string] $Description,
+        [string] $Privacy,
+        [string] $ParentTeamSlug
+    )
+    $args = @("team", "create", $Name, "--org", $Org)
+
+    if ($Description) {
+        $args += "--description"
+        $args += $Description
+    }
+    if ($Privacy) {
+        $args += "--privacy"
+        $args += $Privacy
+    }
+    if ($ParentTeamSlug) {
+        $args += "--parent-team-slug"
+        $args += $ParentTeamSlug
+    }
+
+    $output = gh @args --json slug,name 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warning "Failed to create team '$Name': $output"
+        return $null
+    }
+    return $output | ConvertFrom-Json
 }
 
 function Get-TeamRepos {
-    param($Org, $TeamSlug)
-    # Implement actual repo list retrieval for team
+    param (
+        [string] $Org,
+        [string] $TeamSlug
+    )
+    $repos = gh api "orgs/$Org/teams/$TeamSlug/repos" --jq '.' 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warning "Failed to get repos for team $TeamSlug in org $Org: $repos"
+        return @()
+    }
+    return $repos | ConvertFrom-Json
+}
+
+function Get-TargetRepos {
+    $repos = gh repo list $TargetOrg --json name --limit 1000 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warning "Failed to list repos in target org $TargetOrg: $repos"
+        return @()
+    }
+    return $repos | ConvertFrom-Json
 }
 
 function Set-TeamRepoPermission {
-    param($Org, $TeamSlug, $RepoName, $Permission)
-    # Implement setting team permissions on repo
+    param (
+        [string] $Org,
+        [string] $TeamSlug,
+        [string] $RepoName,
+        [string] $Permission
+    )
+    $args = @("api", "--method", "PUT", "orgs/$Org/teams/$TeamSlug/repos/$Org/$RepoName", "-f", "permission=$Permission")
+    $result = gh @args 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warning "Failed to set permission '$Permission' on repo '$RepoName' for team '$TeamSlug': $result"
+        return $false
+    }
+    return $true
 }
 
 function Get-TeamMembers {
-    param($Org, $TeamSlug)
-    # Implement getting team members usernames
+    param (
+        [string] $Org,
+        [string] $TeamSlug
+    )
+    $members = gh api "orgs/$Org/teams/$TeamSlug/members" --jq '.' 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warning "Failed to get members for team $TeamSlug in org $Org: $members"
+        return @()
+    }
+    return $members | ConvertFrom-Json
 }
 
 function Add-TeamMember {
-    param($Org, $TeamSlug, $MemberEmail)
-    # Implement adding member to team by email (or username)
+    param (
+        [string] $Org,
+        [string] $TeamSlug,
+        [string] $UserEmail
+    )
+    # GitHub API adds member by username, so we must get username from email mapping
+    if (-not $UserEmail) {
+        Write-Warning "User email is null, cannot add member to team $TeamSlug"
+        return $false
+    }
+
+    # We assume that user email equals username for now or you have to implement email-to-username mapping logic
+    $username = $UserEmail.Split('@')[0]
+
+    $args = @("api", "--method", "PUT", "orgs/$Org/teams/$TeamSlug/memberships/$username")
+    $result = gh @args 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warning "Failed to add user $username to team $TeamSlug: $result"
+        return $false
+    }
+    return $true
 }
 
-# Get source and target teams
-$sourceTeams = gh api "orgs/$SourceOrg/teams" --header "Authorization: Bearer $SourcePAT" | ConvertFrom-Json
-$targetTeams = gh api "orgs/$TargetOrg/teams" --header "Authorization: Bearer $TargetPAT" | ConvertFrom-Json
+Write-Output "Loading source teams..."
+$sourceTeams = Get-SourceTeams
+if (-not $sourceTeams) {
+    Write-Error "Failed to load source teams."
+    exit 1
+}
 
-# Get target repos list (to check permissions assignment)
-$targetRepos = gh api "orgs/$TargetOrg/repos" --header "Authorization: Bearer $TargetPAT" | ConvertFrom-Json
+Write-Output "Loading target teams..."
+$targetTeams = Get-TargetTeams
+if (-not $targetTeams) {
+    Write-Error "Failed to load target teams."
+    exit 1
+}
+
+Write-Output "Loading target repositories..."
+$targetRepos = Get-TargetRepos
+
+$newTeams = @{}
 
 # Create teams preserving hierarchy
 foreach ($team in $sourceTeams) {
-    if ($targetTeams.Name -contains $team.name) {
+    if ($targetTeams.name -contains $team.name) {
         Write-Output "Skipping existing team: $($team.name)"
-        $newTeams[$team.slug] = ($targetTeams | Where-Object { $_.name -eq $team.name }).slug
+        $matched = $targetTeams | Where-Object { $_.name -eq $team.name }
+        $newTeams[$team.slug] = $matched.slug
         continue
     }
 
@@ -67,57 +187,4 @@ foreach ($team in $sourceTeams) {
     $createdTeam = Create-Team -Org $TargetOrg -Name $team.name -Description $team.description -Privacy $team.privacy -ParentTeamSlug $parentTeamSlug
     if ($createdTeam) {
         Write-Output "Created team $($team.name)"
-        $newTeams[$team.slug] = $createdTeam.slug
-    } else {
-        Write-Warning "Failed to create team $($team.name)"
-    }
-}
-
-# Apply repo permissions for each team, skip if no repos assigned
-foreach ($team in $sourceTeams) {
-    $sourceTeamSlug = $team.slug
-    if (-not $newTeams.ContainsKey($sourceTeamSlug)) { continue }
-
-    $targetTeamSlug = $newTeams[$sourceTeamSlug]
-    $teamRepos = Get-TeamRepos -Org $SourceOrg -TeamSlug $sourceTeamSlug
-
-    if (-not $teamRepos -or $teamRepos.Count -eq 0) {
-        Write-Output "Team '$($team.name)' has no repos assigned, skipping permission assignment."
-        continue
-    }
-
-    foreach ($repo in $teamRepos) {
-        if (-not ($targetRepos.Name -contains $repo.name)) {
-            Write-Warning "Repo $($repo.name) from source not found in target, skipping permission assignment."
-            continue
-        }
-
-        $permission = ($repo.permissions | Get-Member -MemberType NoteProperty).Name | Where-Object { $repo.permissions.$_ -eq $true }
-        if ($permission) {
-            Set-TeamRepoPermission -Org $TargetOrg -TeamSlug $targetTeamSlug -RepoName $repo.name -Permission $permission
-            Write-Output "Set permission on repo $($repo.name) for team $($team.name)"
-        }
-    }
-}
-
-# Migrate team members
-foreach ($team in $sourceTeams) {
-    $sourceTeamSlug = $team.slug
-    if (-not $newTeams.ContainsKey($sourceTeamSlug)) { continue }
-
-    $targetTeamSlug = $newTeams[$sourceTeamSlug]
-    $members = Get-TeamMembers -Org $SourceOrg -TeamSlug $sourceTeamSlug
-
-    foreach ($memberUsername in $members) {
-        $mappedEmail = Get-MappedUserEmail -sourceUsername $memberUsername
-        if (-not $mappedEmail) {
-            Write-Warning "No email mapping found for user $memberUsername, skipping adding to team $($team.name)."
-            continue
-        }
-
-        Add-TeamMember -Org $TargetOrg -TeamSlug $targetTeamSlug -MemberEmail $mappedEmail
-        Write-Output "Added member $mappedEmail to team $($team.name)"
-    }
-}
-
-Write-Output "Migration completed."
+        $newTeams[$team.slug] = $createdTeam.sl
