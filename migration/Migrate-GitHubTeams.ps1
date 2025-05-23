@@ -7,8 +7,21 @@ param (
 )
 
 # Authenticate GH CLI for source and target orgs
-function Set-GHAuth($Token) {
-    gh auth login --with-token <<< $Token | Out-Null
+function GhAuth([string]$Token) {
+    if (-not $Token) {
+        Write-Output "Using existing GitHub CLI authentication"
+        return
+    }
+
+    $env:GH_TOKEN = $Token
+
+    $authResult = gh auth status 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "GitHub CLI authentication failed with provided token."
+        exit 1
+    } else {
+        Write-Output "GitHub CLI authenticated using GH_TOKEN."
+    }
 }
 
 Write-Output "Authenticating to source org..."
