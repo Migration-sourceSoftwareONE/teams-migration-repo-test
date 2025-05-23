@@ -12,10 +12,8 @@ function GhAuth([string]$Token) {
         return
     }
 
-    # Set the token as an environment variable for gh to use
+    # Use GH_TOKEN environment variable for non-interactive auth
     $env:GH_TOKEN = $Token
-
-    # Test authentication silently
     $authResult = gh auth status 2>$null
     if ($LASTEXITCODE -ne 0) {
         Write-Error "GitHub CLI authentication failed with provided token."
@@ -29,145 +27,115 @@ function Get-Teams([string]$Org) {
     $teams = @()
     $page = 1
     do {
-        $output = gh api "orgs/$Org/teams?per_page=100&page=$page" -q '.' 2>$null | ConvertFrom-Json
-        if ($output) {
-            $teams += $output
+        $pageData = gh api "orgs/$Org/teams?per_page=100&page=$page" 2>$null | ConvertFrom-Json
+        if ($pageData) {
+            $teams += $pageData
             $page++
         }
-    } while ($output.Count -eq 100)
+    } while ($pageData.Count -eq 100)
     return $teams
 }
 
-function Get-TeamByName([string]$Org, [string]$Name) {
-    $teams = Get-Teams -Org $Org
-    return $teams | Where-Object { $_.name -eq $Name }
-}
-
-function Create-Team([string]$Org, [string]$Name, [string]$Description, [string]$Privacy, [string]$ParentTeamSlug) {
-    $body = @{
-        name = $Name
-        description = $Description
-        privacy = $Privacy
-    }
-    if ($ParentTeamSlug) {
-        $body.parent_team_id = $ParentTeamSlug
-    }
-    $jsonBody = $body | ConvertTo-Json -Depth 5
-
+function Create-Team([string]$Org, [string]$Name, [string]$Description, [string]$Privacy, [string]$ParentTeamId) {
+    $body = @{ name = $Name; description = $Description; privacy = $Privacy }
+    if ($ParentTeamId) { $body.parent_team_id = $ParentTeamId }
+    $json = $body | ConvertTo-Json
     try {
-        $result = gh api --method POST "orgs/$Org/teams" -f body="$jsonBody" 2>$null | ConvertFrom-Json
+        $result = gh api --method POST "orgs/$Org/teams" --input - <<<$json 2>$null | ConvertFrom-Json
         return $result
-    }
-    catch {
-        Write-Warning "Failed to create team $Name in $Org: ${_}"
+    } catch {
+        Write-Warning "Failed to create team $Name in $Org: $_"
         return $null
     }
-}
-
-function Get-TeamRepos([string]$Org, [string]$TeamSlug) {
-    $repos = @()
-    $page = 1
-    do {
-        $output = gh api "orgs/$Org/teams/$TeamSlug/repos?per_page=100&page=$page" -q '.' 2>$null | ConvertFrom-Json
-        if ($output) {
-            $repos += $output
-            $page++
-        }
-    } while ($output.Count -eq 100)
-    return $repos
 }
 
 function Get-Repos([string]$Org) {
     $repos = @()
     $page = 1
     do {
-        $output = gh api "orgs/$Org/repos?per_page=100&page=$page" -q '.' 2>$null | ConvertFrom-Json
-        if ($output) {
-            $repos += $output
+        $pageData = gh api "orgs/$Org/repos?per_page=100&page=$page" 2>$null | ConvertFrom-Json
+        if ($pageData) {
+            $repos += $pageData
             $page++
         }
-    } while ($output.Count -eq 100)
+    } while ($pageData.Count -eq 100)
     return $repos
 }
 
-function Set-TeamRepoPermission([string]$Org, [string]$TeamSlug, [string]$RepoName, [string]$Permission) {
+function Get-TeamRepos([string]$Org, [string]$TeamSlug) {
+    $repos = @()
+    $page = 1
+    do {
+        $pageData = gh api "orgs/$Org/teams/$TeamSlug/repos?per_page=100&page=$page" 2>$null | ConvertFrom-Json
+        if ($pageData) {
+            $repos += $pageData
+            $page++
+        }
+    } while ($pageData.Count -eq 100)
+    return $repos
+}
+
+function Set-TeamRepoPermission([string]$Org, [string]$TeamSlug, [string]$Repo, [string]$Permission) {
     try {
-        gh api --method PUT "orgs/$Org/teams/$TeamSlug/repos/$Org/$RepoName" -f permission="$Permission" 2>$null | Out-Null
-    }
-    catch {
-        Write-Warning "Failed to set permission $Permission for team $TeamSlug on repo $RepoName in $Org: ${_}"
+        gh api --method PUT "orgs/$Org/teams/$TeamSlug/repos/$Org/$Repo" -f permission=$Permission 2>$null
+    } catch {
+        Write-Warning "Failed to set $Permission for team $TeamSlug on repo $Repo in $Org: $_"
     }
 }
 
-# Authenticate to source org
+# Authenticate to both orgs
 Write-Output "Authenticating to source org..."
 GhAuth $SourcePAT
-Write-Output "Authenticated to source org."
-
-# Get source teams
-$sourceTeams = Get-Teams -Org $SourceOrg
-
-# Load user mapping CSV
-$userMappings = Import-Csv $UserMappingCsv
-
-# Authenticate to target org
 Write-Output "Authenticating to target org..."
 GhAuth $TargetPAT
-Write-Output "Authenticated to target org."
 
-# Get target teams and repos
+# Load data
+$userMap = Import-Csv $UserMappingCsv
+$sourceTeams = Get-Teams -Org $SourceOrg
 $targetTeams = Get-Teams -Org $TargetOrg
 $targetRepos = Get-Repos -Org $TargetOrg
 
-# Hashtable for new teams created
+# Map existing target teams: name -> slug
+$targetTeamMap = @{}
+foreach ($t in $targetTeams) { $targetTeamMap[$t.name] = $t.slug }
+
+# Track new and existing team slugs
 $newTeams = @{}
 
-# Function to find mapped user by source username
-function Get-MappedUserEmail([string]$sourceUsername) {
-    $mapping = $userMappings | Where-Object { $_.'SourceUsername' -eq $sourceUsername }
-    if ($mapping) { return $mapping.Email }
-    return $null
-}
-
-# Create teams preserving hierarchy
+# Create or use existing teams
 foreach ($team in $sourceTeams) {
-    if ($targetTeams.Name -contains $team.name) {
+    if ($targetTeamMap.ContainsKey($team.name)) {
         Write-Output "Skipping existing team: $($team.name)"
-        $newTeams[$team.slug] = ($targetTeams | Where-Object { $_.name -eq $team.name }).slug
+        $newTeams[$team.slug] = $targetTeamMap[$team.name]
         continue
     }
-
-    # Determine parent_team_id from created teams map if applicable
-    $parentTeamSlug = $null
-    if ($team.parent && $newTeams.ContainsKey($team.parent.slug)) {
-        $parentTeamSlug = $newTeams[$team.parent.slug]
+    # Determine parent ID if needed
+    $parentId = $null
+    if ($team.parent -and $newTeams.ContainsKey($team.parent.slug)) {
+        $parentId = $newTeams[$team.parent.slug]
     }
-
-    $createdTeam = Create-Team -Org $TargetOrg -Name $team.name -Description $team.description -Privacy $team.privacy -ParentTeamSlug $parentTeamSlug
-    if ($createdTeam) {
-        Write-Output "Created team $($team.name)"
-        $newTeams[$team.slug] = $createdTeam.slug
-    } else {
-        Write-Warning "Failed to create team $($team.name)"
+    $created = Create-Team -Org $TargetOrg -Name $team.name -Description $team.description -Privacy $team.privacy -ParentTeamId $parentId
+    if ($created) {
+        $newTeams[$team.slug] = $created.slug
+        Write-Output "Created team: $($team.name)"
     }
 }
 
-# Apply repo permissions for each team
+# Assign repo permissions
 foreach ($team in $sourceTeams) {
-    $sourceTeamSlug = $team.slug
-    if (-not $newTeams.ContainsKey($sourceTeamSlug)) { continue }
+    if (-not $newTeams.ContainsKey($team.slug)) { continue }
+    $slug = $newTeams[$team.slug]
+    $repos = Get-TeamRepos -Org $SourceOrg -TeamSlug $team.slug
 
-    $targetTeamSlug = $newTeams[$sourceTeamSlug]
-    $teamRepos = Get-TeamRepos -Org $SourceOrg -TeamSlug $sourceTeamSlug
-
-    foreach ($repo in $teamRepos) {
-        if (-not ($targetRepos.Name -contains $repo.name)) {
-            Write-Warning "Repo $($repo.name) from source not found in target, skipping permission assignment."
-            continue
+    foreach ($repo in $repos) {
+        if ($targetRepos.name -contains $repo.name) {
+            # Determine permission (read/write/etc.)
+            $perm = ($repo.permissions.PSObject.Properties | Where-Object { $_.Value -eq $true }).Name
+            Set-TeamRepoPermission -Org $TargetOrg -TeamSlug $slug -Repo $repo.name -Permission $perm
+            Write-Output "Set $perm on $($repo.name) for team $($team.name)"
+        } else {
+            Write-Warning "Skipping missing repo $($repo.name) for team $($team.name)"
         }
-        # Set same permission for the team on repo in target org
-        Set-TeamRepoPermission -Org $TargetOrg -TeamSlug $targetTeamSlug -RepoName $repo.name -Permission $repo.permissions | Out-Null
-        Write-Output "Set permission on repo $($repo.name) for team $($team.name)"
     }
 }
 
