@@ -30,6 +30,7 @@ jobs:
 
       - name: Run Migration Script
         env:
+          GH_TOKEN: ${{ secrets.TARGET_PAT }}
           SOURCE_PAT: ${{ secrets.SOURCE_PAT }}
           TARGET_PAT: ${{ secrets.TARGET_PAT }}
         run: |
