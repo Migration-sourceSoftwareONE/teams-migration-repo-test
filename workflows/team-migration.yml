@@ -37,11 +37,11 @@ jobs:
           $mappingCsv = "${{ github.event.inputs.mapping-csv-path }}"
 
           ./Migrate-GitHubTeams.ps1 `
-            -SourceOrg $sourceOrg `
-            -TargetOrg $targetOrg `
-            -MappingCsv $mappingCsv `
-            -SourceToken $env:GH_TOKEN_SOURCE `
-            -TargetToken $env:GH_TOKEN_TARGET
+            -SourceOrg "your-source-org" `
+            -TargetOrg "your-target-org" `
+            -UserMappingCsv "./user-map.csv" `
+            -SourcePAT $env:SOURCE_PAT `
+            -TargetPAT $env:TARGET_PAT
 
       - name: Upload logs and reports
         if: always()
