@@ -31,7 +31,7 @@ jobs:
       - name: Run Team Migration PowerShell Script
         shell: pwsh
         run: |
-          ./Migrate-GitHubTeams.ps1 `
+          ./migration/Migrate-GitHubTeams.ps1 `
             -SourceOrg '${{ github.event.inputs.source-org }}' `
             -TargetOrg '${{ github.event.inputs.target-org }}' `
             -MappingCsv '${{ github.event.inputs.mapping-csv-path }}' `
