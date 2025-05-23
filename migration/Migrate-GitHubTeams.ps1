@@ -12,17 +12,17 @@ function GhAuth([string]$Token) {
         return
     }
 
-    $tempFile = New-TemporaryFile
-    Set-Content -Path $tempFile -Value $Token -NoNewline
+    # Set the token as an environment variable for gh to use
+    $env:GH_TOKEN = $Token
 
-    gh auth logout --hostname github.com -y | Out-Null
-
-    $ghProcess = Start-Process -FilePath "gh" `
-        -ArgumentList "auth login --with-token" `
-        -RedirectStandardInput $tempFile `
-        -NoNewWindow -Wait -PassThru
-
-    Remove-Item $tempFile
+    # Test authentication silently
+    $authResult = gh auth status 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "GitHub CLI authentication failed with provided token."
+        exit 1
+    } else {
+        Write-Output "GitHub CLI authenticated using GH_TOKEN."
+    }
 }
 
 function Get-Teams([string]$Org) {
