@@ -12,11 +12,16 @@ function GhAuth([string]$Token) {
         return
     }
 
-    # Write token to a temp file securely
     $tempFile = New-TemporaryFile
     Set-Content -Path $tempFile -Value $Token -NoNewline
-    gh auth logout --hostname github.com -y
-    gh auth login --with-token < $tempFile
+
+    gh auth logout --hostname github.com -y | Out-Null
+
+    $ghProcess = Start-Process -FilePath "gh" `
+        -ArgumentList "auth login --with-token" `
+        -RedirectStandardInput $tempFile `
+        -NoNewWindow -Wait -PassThru
+
     Remove-Item $tempFile
 }
 
