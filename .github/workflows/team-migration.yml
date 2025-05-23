@@ -34,6 +34,6 @@ jobs:
           ./migration/Migrate-GitHubTeams.ps1 `
             -SourceOrg '${{ github.event.inputs.source-org }}' `
             -TargetOrg '${{ github.event.inputs.target-org }}' `
-            -MappingCsv '${{ github.event.inputs.mapping-csv-path }}' `
+            -UserMappingCsv "./user-map.csv"
             -SourceToken '${{ secrets.SOURCE_PAT }}' `
             -TargetToken '${{ secrets.TARGET_PAT }}'
