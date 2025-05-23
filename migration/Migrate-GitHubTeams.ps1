@@ -1,9 +1,9 @@
 param(
+    [Parameter(Mandatory=$true)][string]$SourcePAT,
+    [Parameter(Mandatory=$true)][string]$TargetPAT,
     [Parameter(Mandatory=$true)][string]$SourceOrg,
     [Parameter(Mandatory=$true)][string]$TargetOrg,
-    [Parameter(Mandatory=$true)][string]$UserMappingCsv,
-    [string]$SourcePAT = $null,
-    [string]$TargetPAT = $null
+    [Parameter(Mandatory=$true)][string]$UserMappingCsv
 )
 
 function GhAuth([string]$Token) {
