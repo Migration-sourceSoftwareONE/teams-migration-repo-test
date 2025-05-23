@@ -18,22 +18,24 @@ on:
         type: string
 
 jobs:
-  migrate-teams:
-    runs-on: windows-latest
-
+  migrate:
+    runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v3
 
-      - name: Check GitHub CLI version
-        run: gh --version
-
-      - name: Run Team Migration PowerShell Script
-        shell: pwsh
+      - name: Install GitHub CLI
         run: |
-          ./migration/Migrate-GitHubTeams.ps1 `
-            -SourcePAT $env:SOURCE_PAT `
-            -TargetPAT $env:TARGET_PAT `
-            -SourceOrg "source-org-name" `
-            -TargetOrg "target-org-name" `
-            -UserMappingCsv "./user-map.csv"
+          sudo apt-get update
+          sudo apt-get install -y gh
+
+      - name: Run Migration Script
+        env:
+          SOURCE_PAT: ${{ secrets.SOURCE_PAT }}
+          TARGET_PAT: ${{ secrets.TARGET_PAT }}
+        run: |
+          pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File migration/Migrate-GitHubTeams.ps1 \
+            -SourceOrg "${{ github.event.inputs.source_org }}" \
+            -TargetOrg "${{ github.event.inputs.target_org }}" \
+            -UserMappingCsv "./user-map.csv" \
+            -SourcePAT "${{ secrets.SOURCE_PAT }}" \
+            -TargetPAT "${{ secrets.TARGET_PAT }}"  \
