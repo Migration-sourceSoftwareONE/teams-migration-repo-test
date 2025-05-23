@@ -1,228 +1,169 @@
 param(
-    [Parameter(Mandatory)][string]$SourceOrg,
-    [Parameter(Mandatory)][string]$TargetOrg,
-    [Parameter(Mandatory)][string]$MappingCsv,
-    [Parameter(Mandatory)][string]$SourceToken,
-    [Parameter(Mandatory)][string]$TargetToken
+    [Parameter(Mandatory=$true)][string]$SourceOrg,
+    [Parameter(Mandatory=$true)][string]$TargetOrg,
+    [Parameter(Mandatory=$true)][string]$UserMappingCsv,
+    [string]$SourcePAT = $null,
+    [string]$TargetPAT = $null
 )
 
-function Login-GitHubCli {
-    param(
-        [string]$Token
-    )
-    $Token | gh auth login --hostname github.com --with-token | Out-Null
+function GhAuth([string]$Token) {
+    if (-not $Token) {
+        Write-Output "Using existing GitHub CLI authentication"
+        return
+    }
+
+    # Write token to a temp file securely
+    $tempFile = New-TemporaryFile
+    Set-Content -Path $tempFile -Value $Token -NoNewline
+    gh auth logout --hostname github.com -y
+    gh auth login --with-token < $tempFile
+    Remove-Item $tempFile
 }
 
-function Get-GhJson {
-    param(
-        [string]$Command
-    )
-    $result = gh $Command --json name,slug,id,parentTeam,description,privacy --paginate --jq '.[]'
-    return $result | ConvertFrom-Json
-}
-
-function Get-Teams {
-    param([string]$Org)
-
-    # Fetch all teams with details
-    $teamsRaw = gh api "orgs/$Org/teams?per_page=100" --paginate
-    $teams = $teamsRaw | ConvertFrom-Json
+function Get-Teams([string]$Org) {
+    $teams = @()
+    $page = 1
+    do {
+        $output = gh api "orgs/$Org/teams?per_page=100&page=$page" -q '.' 2>$null | ConvertFrom-Json
+        if ($output) {
+            $teams += $output
+            $page++
+        }
+    } while ($output.Count -eq 100)
     return $teams
 }
 
-function Find-TeamByName {
-    param([array]$Teams, [string]$Name)
-    return $Teams | Where-Object { $_.name -eq $Name }
+function Get-TeamByName([string]$Org, [string]$Name) {
+    $teams = Get-Teams -Org $Org
+    return $teams | Where-Object { $_.name -eq $Name }
 }
 
-function Create-Team {
-    param(
-        [string]$Org,
-        [string]$Name,
-        [string]$Description,
-        [string]$Privacy,
-        [string]$ParentSlug # nullable
-    )
-
+function Create-Team([string]$Org, [string]$Name, [string]$Description, [string]$Privacy, [string]$ParentTeamSlug) {
     $body = @{
         name = $Name
         description = $Description
         privacy = $Privacy
     }
-    if ($ParentSlug) {
-        $body["parent_team_id"] = $ParentSlug
+    if ($ParentTeamSlug) {
+        $body.parent_team_id = $ParentTeamSlug
     }
+    $jsonBody = $body | ConvertTo-Json -Depth 5
 
-    $jsonBody = $body | ConvertTo-Json -Depth 10
     try {
-        $response = gh api --method POST "orgs/$Org/teams" --input - -H "Accept: application/vnd.github+json" --raw-field "$jsonBody" -Body $jsonBody 2>&1
-        return $response | ConvertFrom-Json
-    } catch {
-        Write-Warning "Failed to create team $Name in $Org: $_"
+        $result = gh api --method POST "orgs/$Org/teams" -f body="$jsonBody" 2>$null | ConvertFrom-Json
+        return $result
+    }
+    catch {
+        Write-Warning "Failed to create team $Name in $Org: ${_}"
         return $null
     }
 }
 
-function Get-Repos {
-    param([string]$Org)
-    $reposRaw = gh api "orgs/$Org/repos?per_page=100" --paginate
-    $repos = $reposRaw | ConvertFrom-Json
+function Get-TeamRepos([string]$Org, [string]$TeamSlug) {
+    $repos = @()
+    $page = 1
+    do {
+        $output = gh api "orgs/$Org/teams/$TeamSlug/repos?per_page=100&page=$page" -q '.' 2>$null | ConvertFrom-Json
+        if ($output) {
+            $repos += $output
+            $page++
+        }
+    } while ($output.Count -eq 100)
     return $repos
 }
 
-function Set-TeamRepoPermission {
-    param(
-        [string]$Org,
-        [string]$TeamSlug,
-        [string]$RepoName,
-        [string]$Permission
-    )
+function Get-Repos([string]$Org) {
+    $repos = @()
+    $page = 1
+    do {
+        $output = gh api "orgs/$Org/repos?per_page=100&page=$page" -q '.' 2>$null | ConvertFrom-Json
+        if ($output) {
+            $repos += $output
+            $page++
+        }
+    } while ($output.Count -eq 100)
+    return $repos
+}
 
-    # Permissions allowed: pull, triage, push, maintain, admin
+function Set-TeamRepoPermission([string]$Org, [string]$TeamSlug, [string]$RepoName, [string]$Permission) {
     try {
-        gh api --method PUT "orgs/$Org/teams/$TeamSlug/repos/$RepoName" -f permission=$Permission
-        Write-Host "Assigned $Permission permission for team $TeamSlug on repo $RepoName"
-    } catch {
-        Write-Warning "Failed to assign repo permission for team $TeamSlug on repo $RepoName: $_"
+        gh api --method PUT "orgs/$Org/teams/$TeamSlug/repos/$Org/$RepoName" -f permission="$Permission" 2>$null | Out-Null
+    }
+    catch {
+        Write-Warning "Failed to set permission $Permission for team $TeamSlug on repo $RepoName in $Org: ${_}"
     }
 }
 
-function Get-UserByEmail {
-    param(
-        [string]$Org,
-        [string]$Email
-    )
-    # GitHub API does not provide user email searching for org members directly.
-    # Instead, we get all members and then fetch their emails if public (or via mapping file).
-    # For this script, assume users exist in target org with given username from CSV mapping.
-    # We just return username from CSV for simplicity here.
+# Authenticate to source org
+Write-Output "Authenticating to source org..."
+GhAuth $SourcePAT
+Write-Output "Authenticated to source org."
+
+# Get source teams
+$sourceTeams = Get-Teams -Org $SourceOrg
+
+# Load user mapping CSV
+$userMappings = Import-Csv $UserMappingCsv
+
+# Authenticate to target org
+Write-Output "Authenticating to target org..."
+GhAuth $TargetPAT
+Write-Output "Authenticated to target org."
+
+# Get target teams and repos
+$targetTeams = Get-Teams -Org $TargetOrg
+$targetRepos = Get-Repos -Org $TargetOrg
+
+# Hashtable for new teams created
+$newTeams = @{}
+
+# Function to find mapped user by source username
+function Get-MappedUserEmail([string]$sourceUsername) {
+    $mapping = $userMappings | Where-Object { $_.'SourceUsername' -eq $sourceUsername }
+    if ($mapping) { return $mapping.Email }
     return $null
 }
 
-# Start script
-
-Write-Host "Logging into Source Org..."
-Login-GitHubCli -Token $SourceToken
-Write-Host "Logging into Target Org..."
-Login-GitHubCli -Token $TargetToken
-
-Write-Host "Loading user mapping CSV: $MappingCsv"
-if (-Not (Test-Path $MappingCsv)) {
-    Write-Error "Mapping CSV file not found at path: $MappingCsv"
-    exit 1
-}
-
-$userMap = Import-Csv $MappingCsv
-
-# Get source teams
-Write-Host "Fetching source organization teams..."
-$sourceTeams = Get-Teams -Org $SourceOrg
-
-# Get target teams
-Write-Host "Fetching target organization teams..."
-$targetTeams = Get-Teams -Org $TargetOrg
-
-# Prepare a dictionary of target teams by name for quick lookup
-$targetTeamNames = @{}
-foreach ($t in $targetTeams) {
-    $targetTeamNames[$t.name] = $t
-}
-
-$skippedTeams = @()
-$createdTeams = @{}
-
-# Create teams recursively respecting hierarchy
-function Create-TeamRecursive {
-    param(
-        [object]$Team
-    )
-
-    # If already created or exists, skip
-    if ($targetTeamNames.ContainsKey($Team.name)) {
-        Write-Host "Skipping existing team: $($Team.name)"
-        $skippedTeams += $Team.name
-        return $targetTeamNames[$Team.name]
-    }
-
-    # Parent team slug/id
-    $parentId = $null
-    if ($Team.parent) {
-        # Find or create parent first
-        $parentTeam = $sourceTeams | Where-Object { $_.id -eq $Team.parent.id }
-        if ($parentTeam) {
-            $parentCreated = Create-TeamRecursive -Team $parentTeam
-            $parentId = $parentCreated.id
-        }
-    }
-
-    # Create team
-    Write-Host "Creating team: $($Team.name)..."
-    $newTeam = gh api --method POST "orgs/$TargetOrg/teams" -f name="$($Team.name)" `
-                                              -f description="$($Team.description)" `
-                                              -f privacy="$($Team.privacy)" `
-                                              $(if ($parentId) { "-f parent_team_id=$parentId" } ) `
-                                              --silent | ConvertFrom-Json
-    if ($newTeam) {
-        $createdTeams[$Team.name] = $newTeam
-        $targetTeamNames[$Team.name] = $newTeam
-        return $newTeam
-    } else {
-        Write-Warning "Failed to create team $($Team.name)"
-        return $null
-    }
-}
-
-# Build a map of created teams (or existing) for permission assignment later
+# Create teams preserving hierarchy
 foreach ($team in $sourceTeams) {
-    Create-TeamRecursive -Team $team | Out-Null
-}
-
-# Fetch repos for source and target orgs
-$sourceRepos = Get-Repos -Org $SourceOrg
-$targetRepos = Get-Repos -Org $TargetOrg
-$targetRepoNames = $targetRepos.name
-
-# For each source team, get repo permissions and replicate
-foreach ($team in $sourceTeams) {
-    # Skip if team not created
-    if (-not $targetTeamNames.ContainsKey($team.name)) {
-        Write-Warning "Team $($team.name) missing in target, skipping repo permission assignment"
+    if ($targetTeams.Name -contains $team.name) {
+        Write-Output "Skipping existing team: $($team.name)"
+        $newTeams[$team.slug] = ($targetTeams | Where-Object { $_.name -eq $team.name }).slug
         continue
     }
-    $targetTeamSlug = $targetTeamNames[$team.name].slug
 
-    # Get repos with permissions for team
-    $permsRaw = gh api "teams/$($team.slug)/repos?per_page=100" --paginate | ConvertFrom-Json
-    foreach ($repo in $permsRaw) {
-        if ($targetRepoNames -contains $repo.name) {
+    # Determine parent_team_id from created teams map if applicable
+    $parentTeamSlug = $null
+    if ($team.parent && $newTeams.ContainsKey($team.parent.slug)) {
+        $parentTeamSlug = $newTeams[$team.parent.slug]
+    }
 
-            $perm = "push" # fallback
+    $createdTeam = Create-Team -Org $TargetOrg -Name $team.name -Description $team.description -Privacy $team.privacy -ParentTeamSlug $parentTeamSlug
+    if ($createdTeam) {
+        Write-Output "Created team $($team.name)"
+        $newTeams[$team.slug] = $createdTeam.slug
+    } else {
+        Write-Warning "Failed to create team $($team.name)"
+    }
+}
 
-            Set-TeamRepoPermission -Org $TargetOrg -TeamSlug $targetTeamSlug -RepoName $repo.name -Permission $perm
-        } else {
-            Write-Warning "Repository $($repo.name) not found in target org, skipping permission assignment."
+# Apply repo permissions for each team
+foreach ($team in $sourceTeams) {
+    $sourceTeamSlug = $team.slug
+    if (-not $newTeams.ContainsKey($sourceTeamSlug)) { continue }
+
+    $targetTeamSlug = $newTeams[$sourceTeamSlug]
+    $teamRepos = Get-TeamRepos -Org $SourceOrg -TeamSlug $sourceTeamSlug
+
+    foreach ($repo in $teamRepos) {
+        if (-not ($targetRepos.Name -contains $repo.name)) {
+            Write-Warning "Repo $($repo.name) from source not found in target, skipping permission assignment."
+            continue
         }
+        # Set same permission for the team on repo in target org
+        Set-TeamRepoPermission -Org $TargetOrg -TeamSlug $targetTeamSlug -RepoName $repo.name -Permission $repo.permissions | Out-Null
+        Write-Output "Set permission on repo $($repo.name) for team $($team.name)"
     }
 }
 
-# Map users - this script example just logs unmapped users (full mapping logic needs user email queries)
-$unmappedUsers = @()
-foreach ($user in $userMap) {
-    # Try find user in target org by email 
-    $foundUser = $null
-    if (-not $foundUser) {
-        Write-Warning "User '$($user.'SourceUserName')' with email '$($user.Email)' not found in target org"
-        $unmappedUsers += $user
-    }
-}
-
-# Final report
-Write-Host "=== Migration Summary ==="
-Write-Host "Teams skipped (already existed):"
-$skippedTeams | ForEach-Object { Write-Host "- $_" }
-Write-Host "Users not mapped:"
-foreach ($u in $unmappedUsers) {
-    Write-Host "- Source username: $($u.'SourceUserName'), Email: $($u.Email)"
-}
-
-Write-Host "Migration script finished."
+Write-Output "Migration completed."
