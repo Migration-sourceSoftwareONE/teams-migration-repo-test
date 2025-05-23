@@ -35,8 +35,8 @@ jobs:
           TARGET_PAT: ${{ secrets.TARGET_PAT }}
         run: |
           pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File migration/Migrate-GitHubTeams.ps1 \
-            -SourceOrg "${{ github.event.inputs.source_org }}" \
-            -TargetOrg "${{ github.event.inputs.target_org }}" \
+            -SourceOrg "${{ github.event.inputs.source-org }}" \
+            -TargetOrg "${{ github.event.inputs.target-org }}" \
             -UserMappingCsv "./user-map.csv" \
             -SourcePAT "${{ secrets.SOURCE_PAT }}" \
             -TargetPAT "${{ secrets.TARGET_PAT }}"  \
