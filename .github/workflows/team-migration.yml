@@ -1,57 +1,39 @@
-name: GitHub Team Migration
+name: Migrate GitHub Teams
 
 on:
   workflow_dispatch:
     inputs:
       source-org:
-        description: "Source GitHub organization"
+        description: 'Source GitHub organization name'
         required: true
         type: string
       target-org:
-        description: "Target GitHub organization"
+        description: 'Target GitHub organization name'
         required: true
         type: string
       mapping-csv-path:
-        description: "Path to user mapping CSV file (relative to repo root)"
+        description: 'Path to user mapping CSV file'
         required: true
+        default: 'user-map.csv'
         type: string
 
 jobs:
   migrate-teams:
     runs-on: windows-latest
-    env:
-      GH_TOKEN_SOURCE: ${{ secrets.GH_TOKEN_SOURCE }}
-      GH_TOKEN_TARGET: ${{ secrets.GH_TOKEN_TARGET }}
+
     steps:
-      - name: Checkout repo
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install GitHub CLI
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y gh
+      - name: Check GitHub CLI version
+        run: gh --version
 
-      - name: Run PowerShell migration
+      - name: Run Team Migration PowerShell Script
         shell: pwsh
         run: |
-          $sourceOrg = "${{ github.event.inputs.source-org }}"
-          $targetOrg = "${{ github.event.inputs.target-org }}"
-          $mappingCsv = "${{ github.event.inputs.mapping-csv-path }}"
-
           ./Migrate-GitHubTeams.ps1 `
-            -SourceOrg $sourceOrg `
-            -TargetOrg $targetOrg `
-            -MappingCsv $mappingCsv `
-            -SourceToken $env:GH_TOKEN_SOURCE `
-            -TargetToken $env:GH_TOKEN_TARGET
-
-      - name: Upload logs and reports
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: migration-logs
-          path: |
-            execution-log.txt
-            teams-skipped.csv
-            users-unmapped.csv
-            repos-skipped.csv
+            -SourceOrg '${{ github.event.inputs.source-org }}' `
+            -TargetOrg '${{ github.event.inputs.target-org }}' `
+            -MappingCsv '${{ github.event.inputs.mapping-csv-path }}' `
+            -SourceToken '${{ secrets.SOURCE_PAT }}' `
+            -TargetToken '${{ secrets.TARGET_PAT }}'
