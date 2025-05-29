@@ -312,97 +312,6 @@ function Add-TeamMember([string]$Org, [string]$TeamSlug, [string]$Username, [str
     }
 }
 
-function Get-UserEmail([string]$Org, [string]$Username) {
-    if ([string]::IsNullOrWhiteSpace($Username)) {
-        Write-Warning "Cannot get email for user with empty username."
-        return $null
-    }
-    
-    try {
-        # Note: This requires appropriate permissions to view user emails
-        $output = gh api "users/$Username" --jq '.email' 2>$null
-        if ($output -and $output -ne "null") {
-            return $output.Trim('"')
-        }
-        
-        # If public email not available, try to get from commits
-        # This is a fallback and might not always work
-        Write-Output "Public email not available for user '${Username}', attempting to find email from commits..."
-        
-        # Get repositories the user has contributed to in the org
-        $repos = Get-Repos -Org $Org
-        foreach ($repo in $repos) {
-            $contributors = gh api "repos/$Org/$($repo.name)/contributors" --jq '.[].login' 2>$null
-            if ($contributors -contains $Username) {
-                # Look for commits by this user
-                $commits = gh api "repos/$Org/$($repo.name)/commits?author=$Username&per_page=1" --jq '.[0].commit.author.email' 2>$null
-                if ($commits -and $commits -ne "null") {
-                    return $commits.Trim('"')
-                }
-            }
-        }
-    } catch {
-        Write-Warning "Error retrieving email for user '${Username}': $_"
-    }
-    
-    return $null
-}
-
-function Find-UserByEmail([string]$Org, [string]$Email) {
-    if ([string]::IsNullOrWhiteSpace($Email)) {
-        Write-Warning "Cannot find user with empty email."
-        return $null
-    }
-    
-    Write-Output "Searching for user with email '${Email}' in organization '${Org}'..."
-    
-    # This requires SAML SSO context for enterprise to be fully reliable
-    # But we'll use some approximation methods that may work in many cases
-    
-    try {
-        # Get all users in the organization
-        $orgMembers = @()
-        $page = 1
-        
-        do {
-            $output = gh api "orgs/$Org/members?per_page=100&page=$page" --jq '.' 2>$null
-            if ($output) {
-                $outputJson = $output | ConvertFrom-Json
-                if ($outputJson -and $outputJson.Count -gt 0) {
-                    $orgMembers += $outputJson
-                    $page++
-                } else {
-                    break
-                }
-            } else {
-                break
-            }
-        } while ($true)
-        
-        Write-Output "Found $($orgMembers.Count) members in organization '${Org}'."
-        
-        # Create a cache for email lookups to avoid excessive API calls
-        $emailCache = @{}
-        
-        # First try the most likely path - users with public emails
-        foreach ($member in $orgMembers) {
-            $userEmail = Get-UserEmail -Org $Org -Username $member.login
-            if ($userEmail) {
-                $emailCache[$member.login] = $userEmail
-                if ($userEmail -eq $Email) {
-                    Write-Output "Found user '$($member.login)' with matching email '${Email}'."
-                    return $member.login
-                }
-            }
-        }
-    } catch {
-        Write-Warning "Error searching for user by email '${Email}': $_"
-    }
-    
-    Write-Warning "No user found with email '${Email}' in organization '${Org}'."
-    return $null
-}
-
 function Get-UserMapping([string]$CsvPath) {
     if (-not (Test-Path $CsvPath)) {
         Write-Error "User mapping CSV file not found at path: ${CsvPath}"
@@ -410,47 +319,34 @@ function Get-UserMapping([string]$CsvPath) {
     }
     
     try {
-        Write-Output "Reading user mapping from CSV file '${CsvPath}'..."
         $userMap = Import-Csv -Path $CsvPath
         
         # Validate the CSV has the required columns
         if ($userMap.Count -gt 0) {
             $firstRow = $userMap[0]
-            
-            # Check for source username and email columns
-            $hasSourceUsername = $firstRow.PSObject.Properties.Name -contains "SourceUsername"
-            $hasEmail = $firstRow.PSObject.Properties.Name -contains "Email"
-            
-            if (-not $hasSourceUsername -or -not $hasEmail) {
-                Write-Warning "User mapping CSV does not contain required columns 'SourceUsername' and/or 'Email'."
+            if (-not ($firstRow.PSObject.Properties.Name -contains "SourceUsername") -or 
+                -not ($firstRow.PSObject.Properties.Name -contains "TargetUsername")) {
+                Write-Warning "User mapping CSV does not contain required columns 'SourceUsername' and/or 'TargetUsername'."
                 Write-Warning "Available columns: $($firstRow.PSObject.Properties.Name -join ', ')"
                 
                 # Try to infer column names
-                $possibleSourceColumns = $firstRow.PSObject.Properties.Name | Where-Object { 
-                    $_ -like "*Source*" -or $_ -like "*User*" -or $_ -like "*Login*" -or $_ -like "*Name*" 
-                }
+                $possibleSourceColumns = $firstRow.PSObject.Properties.Name | Where-Object { $_ -like "*Source*" -or $_ -like "*From*" }
+                $possibleTargetColumns = $firstRow.PSObject.Properties.Name | Where-Object { $_ -like "*Target*" -or $_ -like "*To*" }
                 
-                $possibleEmailColumns = $firstRow.PSObject.Properties.Name | Where-Object { 
-                    $_ -like "*Email*" -or $_ -like "*Mail*" 
-                }
-                
-                if ($possibleSourceColumns -and $possibleEmailColumns) {
-                    $sourceCol = $possibleSourceColumns[0]
-                    $emailCol = $possibleEmailColumns[0]
-                    
-                    Write-Output "Using inferred column names: SourceUsername='$sourceCol', Email='$emailCol'"
+                if ($possibleSourceColumns -and $possibleTargetColumns) {
+                    Write-Output "Using inferred column names: Source='$($possibleSourceColumns[0])', Target='$($possibleTargetColumns[0])'"
                     
                     # Create a new array with properly named properties
                     $newUserMap = @()
                     foreach ($row in $userMap) {
                         $newUserMap += [PSCustomObject]@{
-                            SourceUsername = $row.$sourceCol
-                            Email = $row.$emailCol
+                            SourceUsername = $row.$($possibleSourceColumns[0])
+                            TargetUsername = $row.$($possibleTargetColumns[0])
                         }
                     }
                     return $newUserMap
                 } else {
-                    Write-Error "Cannot determine SourceUsername and Email columns in the CSV. Please rename columns to 'SourceUsername' and 'Email'."
+                    Write-Error "Cannot determine source and target username columns in the CSV. Please rename columns to 'SourceUsername' and 'TargetUsername'."
                     exit 1
                 }
             }
@@ -460,36 +356,6 @@ function Get-UserMapping([string]$CsvPath) {
     } catch {
         Write-Error "Failed to read user mapping CSV: $_"
         exit 1
-    }
-}
-
-function Build-EmailToUsernameMap([string]$Org, [array]$UserMapping) {
-    $emailToUsernameMap = @{}
-    
-    Write-Output "Building email-to-username mapping for target organization '${Org}'..."
-    
-    # Cache for target org usernames found by email
-    $emailCache = @{}
-    
-    foreach ($mappingEntry in $UserMapping) {
-        if (-not [string]::IsNullOrWhiteSpace($mappingEntry.Email)) {
-            $targetUsername = Find-UserByEmail -Org $Org -Email $mappingEntry.Email
-            if ($targetUsername) {
-                Write-Output "Mapped email '$($mappingEntry.Email)' to user '$targetUsername' in target organization."
-                $emailToUsernameMap[$mappingEntry.Email] = $targetUsername
-                $emailCache[$mappingEntry.SourceUsername] = $mappingEntry.Email
-            } else {
-                Write-Warning "Could not find user with email '$($mappingEntry.Email)' in target organization."
-            }
-        } else {
-            Write-Warning "Skipping mapping entry for source user '$($mappingEntry.SourceUsername)' due to missing email."
-        }
-    }
-    
-    Write-Output "Built mapping for $($emailToUsernameMap.Count) users based on email."
-    return @{
-        EmailMap = $emailToUsernameMap
-        SourceUserToEmailMap = $emailCache
     }
 }
 
@@ -663,26 +529,15 @@ foreach ($sourceTeam in $sourceTeams) {
     }
 }
 
-# 5. Load user mapping and build email-to-username map
-Write-Output "Loading user mapping from ${UserMappingCsv}..."
+# 5. Add team members using the user mapping
+Write-Output "Adding team members using user mapping from ${UserMappingCsv}..."
 try {
     $userMapping = Get-UserMapping -CsvPath $UserMappingCsv
     Write-Output "Loaded user mapping with $($userMapping.Count) entries."
-    
-    # Build the email-to-username mapping for the target organization
-    $mappings = Build-EmailToUsernameMap -Org $TargetOrg -UserMapping $userMapping
-    $emailToUsernameMap = $mappings.EmailMap
-    $sourceUserToEmailMap = $mappings.SourceUserToEmailMap
-    
-    Write-Output "Successfully built email-to-username mapping with $($emailToUsernameMap.Count) entries."
 } catch {
-    Write-Warning "Failed to build user mapping: $_"
-    $emailToUsernameMap = @{}
-    $sourceUserToEmailMap = @{}
+    Write-Warning "Failed to load user mapping: $_"
+    $userMapping = @()
 }
-
-# 6. Add team members using the email mapping
-Write-Output "Adding team members using email-based mapping..."
 
 foreach ($sourceTeam in $sourceTeams) {
     # Skip teams with empty names
@@ -704,46 +559,15 @@ foreach ($sourceTeam in $sourceTeams) {
                 continue
             }
             
-            # First check if we have a cached email for this source user
-            $email = $sourceUserToEmailMap[$member.login]
+            # Find the mapped username for this user
+            $mappedUser = $userMapping | Where-Object { $_.SourceUsername -eq $member.login }
             
-            # If not, try to get their email
-            if (-not $email) {
-                # Get the user's email from the mapping CSV or by API if needed
-                $mappingEntry = $userMapping | Where-Object { $_.SourceUsername -eq $member.login }
-                if ($mappingEntry -and -not [string]::IsNullOrWhiteSpace($mappingEntry.Email)) {
-                    $email = $mappingEntry.Email
-                    $sourceUserToEmailMap[$member.login] = $email
-                } else {
-                    # If not in CSV, try to get email via API
-                    $email = Get-UserEmail -Org $SourceOrg -Username $member.login
-                    if ($email) {
-                        $sourceUserToEmailMap[$member.login] = $email
-                    }
-                }
-            }
-            
-            # Now look up the target username using the email
-            if ($email) {
-                # Check if we already have a mapping for this email
-                $targetUsername = $emailToUsernameMap[$email]
-                
-                # If not, look up the user in the target org
-                if (-not $targetUsername) {
-                    $targetUsername = Find-UserByEmail -Org $TargetOrg -Email $email
-                    if ($targetUsername) {
-                        $emailToUsernameMap[$email] = $targetUsername
-                    }
-                }
-                
-                if ($targetUsername) {
-                    Write-Output "Adding user '${targetUsername}' to team '$($targetTeam.name)' (matched by email '${email}')."
-                    Add-TeamMember -Org $TargetOrg -TeamSlug $targetTeam.slug -Username $targetUsername -Role ($member.role ?? "member")
-                } else {
-                    Write-Warning "Could not find matching user for '$($member.login)' with email '${email}' in target organization."
-                }
+            if ($mappedUser -and -not [string]::IsNullOrWhiteSpace($mappedUser.TargetUsername)) {
+                $targetUsername = $mappedUser.TargetUsername
+                Write-Output "Adding user '${targetUsername}' to team '$($targetTeam.name)'."
+                Add-TeamMember -Org $TargetOrg -TeamSlug $targetTeam.slug -Username $targetUsername -Role ($member.role ?? "member")
             } else {
-                Write-Warning "No email found for user '$($member.login)' in source organization."
+                Write-Warning "No mapping found for user '$($member.login)' in team '$($sourceTeam.name)'."
             }
         }
     } else {
