@@ -1,55 +1,42 @@
-name: GitHub Team Migration
+name: "Migrate GitHub Teams"
 
 on:
   workflow_dispatch:
     inputs:
-      source-org:
-        description: "Source GitHub organization"
+      source_org:
+        description: 'Source organization name'
         required: true
-        type: string
-      target-org:
-        description: "Target GitHub organization"
+      target_org:
+        description: 'Target organization name'
         required: true
-        type: string
-      mapping-csv-path:
-        description: "Path to user mapping CSV file (relative to repo root)"
-        required: true
-        type: string
+      dry_run:
+        description: 'Enable dry-run mode (true/false)'
+        required: false
+        default: 'false'
 
 jobs:
   migrate-teams:
-    runs-on: windows-latest
-    env:
-      GH_TOKEN_SOURCE: ${{ secrets.GH_TOKEN_SOURCE }}
-      GH_TOKEN_TARGET: ${{ secrets.GH_TOKEN_TARGET }}
+    runs-on: ubuntu-latest
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v3
 
       - name: Install GitHub CLI
-        uses: cli/cli-action@v2
-
-      - name: Run PowerShell migration
-        shell: pwsh
         run: |
-          $sourceOrg = "${{ github.event.inputs.source-org }}"
-          $targetOrg = "${{ github.event.inputs.target-org }}"
-          $mappingCsv = "${{ github.event.inputs.mapping-csv-path }}"
+          sudo apt-get update
+          sudo apt-get install -y gh
 
-          ./Migrate-GitHubTeams.ps1 `
-            -SourceOrg "your-source-org" `
-            -TargetOrg "your-target-org" `
-            -UserMappingCsv "./user-map.csv" `
-            -SourcePAT $env:SOURCE_PAT `
-            -TargetPAT $env:TARGET_PAT
+      - name: Install PowerShell
+        run: |
+          sudo apt-get install -y powershell
 
-      - name: Upload logs and reports
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: migration-logs
-          path: |
-            execution-log.txt
-            teams-skipped.csv
-            users-unmapped.csv
-            repos-skipped.csv
+      - name: Run Team Migration Script
+        env:
+          SOURCE_PAT: ${{ secrets.SOURCE_PAT }}
+          TARGET_PAT: ${{ secrets.TARGET_PAT }}
+        run: |
+          pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File migration/Migrate-GitHubTeams.ps1 `
+            -SourceOrg "${{ github.event.inputs.source_org }}" `
+            -TargetOrg "${{ github.event.inputs.target_org }}" `
+            -UserMappingCsv "user-map.csv" `
+            $([ "${{ github.event.inputs.dry_run }}" == 'true' ] && echo "-DryRun")
