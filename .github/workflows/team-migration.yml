@@ -9,6 +9,9 @@ on:
       target_org:
         description: 'Target organization name'
         required: true
+      user_mapping_csv:
+        description: 'Path to the CSV file with user mapping'
+        required: true
       dry_run:
         description: 'Enable dry-run mode (true/false)'
         required: false
@@ -38,5 +41,5 @@ jobs:
           pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File migration/Migrate-GitHubTeams.ps1 `
             -SourceOrg "${{ github.event.inputs.source_org }}" `
             -TargetOrg "${{ github.event.inputs.target_org }}" `
-            -UserMappingCsv "user-map.csv" `
+            -UserMappingCsv "${{ github.event.inputs.user_mapping_csv }}" `
             $([ "${{ github.event.inputs.dry_run }}" == 'true' ] && echo "-DryRun")
