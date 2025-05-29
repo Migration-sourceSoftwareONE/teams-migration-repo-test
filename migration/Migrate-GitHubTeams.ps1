@@ -1,26 +1,25 @@
 param(
-    [Parameter(Mandatory=$true)][string]$SourcePAT,
-    [Parameter(Mandatory=$true)][string]$TargetPAT,
     [Parameter(Mandatory=$true)][string]$SourceOrg,
     [Parameter(Mandatory=$true)][string]$TargetOrg,
     [Parameter(Mandatory=$true)][string]$UserMappingCsv,
     [switch]$DryRun
 )
 
-function GhAuth([string]$Token) {
+function GhAuth([string]$EnvVarName) {
+    $Token = (Get-Item "env:$EnvVarName").Value
     if (-not $Token) {
-        Write-Output "Using existing GitHub CLI authentication"
-        return
+        Write-Error "Environment variable $EnvVarName is not set or empty."
+        exit 1
     }
 
     $env:GH_TOKEN = $Token
 
     $authResult = gh auth status 2>$null
     if ($LASTEXITCODE -ne 0) {
-        Write-Error "GitHub CLI authentication failed with provided token."
+        Write-Error "GitHub CLI authentication failed using $EnvVarName."
         exit 1
     } else {
-        Write-Output "GitHub CLI authenticated using GH_TOKEN."
+        Write-Output "GitHub CLI authenticated using $EnvVarName."
     }
 }
 
@@ -110,7 +109,7 @@ function Set-TeamRepoPermission([string]$Org, [string]$TeamSlug, [string]$RepoNa
 
 # Authenticate to source org
 Write-Output "Authenticating to source org..."
-GhAuth $SourcePAT
+GhAuth "SOURCE_PAT"
 Write-Output "Authenticated to source org."
 
 # Get source teams
@@ -121,7 +120,7 @@ $userMappings = Import-Csv $UserMappingCsv
 
 # Authenticate to target org
 Write-Output "Authenticating to target org..."
-GhAuth $TargetPAT
+GhAuth "TARGET_PAT"
 Write-Output "Authenticated to target org."
 
 # Get target teams and repos
