@@ -244,8 +244,8 @@ function Get-Repos([string]$Org) {
 
 function Set-TeamRepoPermission([string]$Org, [string]$TeamSlug, [string]$RepoName, [string]$Permission) {
     # Validate parameters
-    if ([string]::IsNullOrWhiteSpace($TeamSlug) -or [string]::IsNullOrWhiteSpace($RepoName)) {
-        Write-Warning "Cannot set permission with empty values: TeamSlug='${TeamSlug}', RepoName='${RepoName}'."
+    if ([string]::IsNullOrWhiteSpace($TeamSlug) -or [string]::IsNullOrWhiteSpace($RepoName) -or [string]::IsNullOrWhiteSpace($Permission)) {
+        Write-Warning "Cannot set permission with empty values: TeamSlug='${TeamSlug}', RepoName='${RepoName}', Permission='${Permission}'."
         return
     }
 
@@ -807,4 +807,102 @@ foreach ($sourceTeam in $sourceTeams) {
                 }
                 
                 Write-Output "Setting permission '${permission}' for team '$($targetTeam.name)' on repository '$($targetRepo.name)'."
-                Set-TeamRepo
+                Set-TeamRepoPermission -Org $TargetOrg -TeamSlug $targetTeam.slug -RepoName $targetRepo.name -Permission $permission
+            } else {
+                Write-Output "Repository '$($repo.name)' not found in target organization. Skipping permission assignment."
+            }
+        }
+    } else {
+        Write-Warning "Team '$($sourceTeam.name)' not found in target organization for permission setting."
+    }
+}
+
+# 5. Load user mapping and build email-to-username map
+Write-Output "Loading user mapping from ${UserMappingCsv}..."
+try {
+    $userMapping = Get-UserMapping -CsvPath $UserMappingCsv
+    Write-Output "Loaded user mapping with $($userMapping.Count) entries."
+    
+    # Build the email-to-username mapping for the target organization
+    $mappings = Build-EmailToUsernameMap -Org $TargetOrg -UserMapping $userMapping
+    $emailToUsernameMap = $mappings.EmailMap
+    $sourceUserToEmailMap = $mappings.SourceUserToEmailMap
+    
+    Write-Output "Successfully built email-to-username mapping with $($emailToUsernameMap.Count) entries."
+} catch {
+    Write-Warning "Failed to build user mapping: $_"
+    $emailToUsernameMap = @{}
+    $sourceUserToEmailMap = @{}
+}
+
+# 6. Add team members using the email mapping
+Write-Output "Adding team members using email-based mapping..."
+
+foreach ($sourceTeam in $sourceTeams) {
+    # Skip teams with empty names
+    if ([string]::IsNullOrWhiteSpace($sourceTeam.name) -or [string]::IsNullOrWhiteSpace($sourceTeam.slug)) {
+        Write-Warning "Skipping team with empty name or slug when adding members."
+        continue
+    }
+    
+    $targetTeam = $finalTargetTeams | Where-Object { $_.name -eq $sourceTeam.name }
+    
+    if ($targetTeam) {
+        Write-Output "Processing members for team: $($targetTeam.name)"
+        $teamMembers = Get-TeamMembers -Org $SourceOrg -TeamSlug $sourceTeam.slug
+        
+        foreach ($member in $teamMembers) {
+            # Skip members with empty logins
+            if ([string]::IsNullOrWhiteSpace($member.login)) {
+                Write-Warning "Skipping member with empty login for team '$($targetTeam.name)'."
+                continue
+            }
+            
+            # First check if we have a cached email for this source user
+            $email = $sourceUserToEmailMap[$member.login]
+            
+            # If not, try to get their email
+            if (-not $email) {
+                # Get the user's email from the mapping CSV or by API if needed
+                $mappingEntry = $userMapping | Where-Object { $_.SourceUsername -eq $member.login }
+                if ($mappingEntry -and -not [string]::IsNullOrWhiteSpace($mappingEntry.Email)) {
+                    $email = $mappingEntry.Email
+                    $sourceUserToEmailMap[$member.login] = $email
+                } else {
+                    # If not in CSV, try to get email via API
+                    $email = Get-UserEmail -Org $SourceOrg -Username $member.login
+                    if ($email) {
+                        $sourceUserToEmailMap[$member.login] = $email
+                    }
+                }
+            }
+            
+            # Now look up the target username using the email
+            if ($email) {
+                # Check if we already have a mapping for this email
+                $targetUsername = $emailToUsernameMap[$email]
+                
+                # If not, look up the user in the target org
+                if (-not $targetUsername) {
+                    $targetUsername = Find-UserByEmail -Org $TargetOrg -Email $email
+                    if ($targetUsername) {
+                        $emailToUsernameMap[$email] = $targetUsername
+                    }
+                }
+                
+                if ($targetUsername) {
+                    Write-Output "Adding user '${targetUsername}' to team '$($targetTeam.name)' (matched by email '${email}')."
+                    Add-TeamMember -Org $TargetOrg -TeamSlug $targetTeam.slug -Username $targetUsername -Role ($member.role ?? "member")
+                } else {
+                    Write-Warning "Could not find matching user for '$($member.login)' with email '${email}' in target organization."
+                }
+            } else {
+                Write-Warning "No email found for user '$($member.login)' in source organization."
+            }
+        }
+    } else {
+        Write-Warning "Team '$($sourceTeam.name)' not found in target organization for member assignment."
+    }
+}
+
+Write-Output "GitHub Teams migration completed."
