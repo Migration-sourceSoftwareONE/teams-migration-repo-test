@@ -36,7 +36,7 @@ jobs:
           TARGET_PAT: ${{ secrets.TARGET_PAT }}
         run: |
           pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File migration/Migrate-GitHubTeams.ps1 `
-            -SourceOrg "${{ github.event.inputs.source_org }}" `
-            -TargetOrg "${{ github.event.inputs.target_org }}" `
+            -SourceOrg "Migration-sourceSoftwareONE" `
+            -TargetOrg "MigrationTestSONE" `
             -UserMappingCsv "user-map.csv" `
             $([ "${{ github.event.inputs.dry_run }}" == 'true' ] && echo "-DryRun")
