@@ -95,4 +95,14 @@ function Get-Repos([string]$Org) {
 
 function Set-TeamRepoPermission([string]$Org, [string]$TeamSlug, [string]$RepoName, [string]$Permission) {
     if ($DryRun) {
-        Write-Output "Dry-run: Would set permission '$Permission' for team '$TeamSlug' on
+        Write-Output "Dry-run: Would set permission '$Permission' for team '$TeamSlug' on repository '$RepoName'."
+        return
+    }
+
+    try {
+        gh api --method PUT "orgs/$Org/teams/$TeamSlug/repos/$Org/$RepoName" -f permission=$Permission
+        Write-Output "Set permission '$Permission' for team '$TeamSlug' on repository '$RepoName'."
+    } catch {
+        Write-Warning ("Failed to set permission {0} for team {1} on repository {2}: {3}" -f $Permission, $TeamSlug, $RepoName, $_)
+    }
+}
