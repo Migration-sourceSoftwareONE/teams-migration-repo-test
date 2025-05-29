@@ -1,25 +1,44 @@
-name: "Migrate GitHub Teams"
+name: "Migrate Variables & Secrets"
 
 on:
   workflow_dispatch:
     inputs:
       source_org:
-        description: 'Source organization name'
+        description: 'Source organization'
         required: true
+      source_repo:
+        description: 'Source repository (leave empty to migrate all)'
+        required: false
       target_org:
-        description: 'Target organization name'
+        description: 'Target organization'
         required: true
-      dry_run:
-        description: 'Enable dry-run mode (true/false)'
+      target_repo:
+        description: 'Target repository'
+        required: true
+      scope:
+        description: >-
+          Comma-separated scopes:
+          actionsreposecrets,
+          actionsrepovariables,
+          dependabotreposecrets,
+          codespacesreposecrets,
+          actionsenvsecrets,
+          actionsenvvariables,
+          actionsorgsecrets,
+          actionsorgvariables,
+          dependabotorgsecrets,
+          codespacesorgsecrets
+        required: true
+      force:
+        description: 'Overwrite existing values?'
         required: false
         default: 'false'
 
 jobs:
-  migrate-teams:
+  migrate:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v3
+      - uses: actions/checkout@v3
 
       - name: Install GitHub CLI
         run: |
@@ -30,13 +49,15 @@ jobs:
         run: |
           sudo apt-get install -y powershell
 
-      - name: Run Team Migration Script
+      - name: Run Migration Script
         env:
           SOURCE_PAT: ${{ secrets.SOURCE_PAT }}
           TARGET_PAT: ${{ secrets.TARGET_PAT }}
         run: |
-          pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File migration/Migrate-GitHubTeams.ps1 `
-            -SourceOrg "Migration-sourceSoftwareONE" `
-            -TargetOrg "MigrationTestSONE" `
-            -UserMappingCsv "user-map.csv" `
-            $([ "${{ github.event.inputs.dry_run }}" == 'true' ] && echo "-DryRun")
+          pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File migration/Migrate-GitHubVariablesAndSecrets.ps1 `
+            -SourceOrg "${{ github.event.inputs.source_org }}" `
+            -SourceRepo "${{ github.event.inputs.source_repo }}" `
+            -TargetOrg "${{ github.event.inputs.target_org }}" `
+            -TargetRepo "${{ github.event.inputs.target_repo }}" `
+            -Scope "${{ github.event.inputs.scope }}" `
+            $([ "${{ github.event.inputs.force }}" == 'true' ] && echo "-Force")
