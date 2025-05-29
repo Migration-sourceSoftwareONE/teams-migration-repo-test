@@ -189,26 +189,6 @@ function Get-TeamRepos([string]$Org, [string]$TeamSlug) {
     return $repos
 }
 
-function Get-TeamRepoPermission([string]$Org, [string]$TeamSlug, [string]$RepoName) {
-    if ([string]::IsNullOrWhiteSpace($TeamSlug) -or [string]::IsNullOrWhiteSpace($RepoName)) {
-        Write-Warning "Cannot get permission with empty values: TeamSlug='${TeamSlug}', RepoName='${RepoName}'."
-        return $null
-    }
-    
-    try {
-        $output = gh api "orgs/$Org/teams/$TeamSlug/repos/$Org/$RepoName" --jq '.permission' 2>$null
-        if ($output) {
-            $permission = $output.Trim('"')
-            Write-Output "Team '${TeamSlug}' has permission '${permission}' on repository '${RepoName}'."
-            return $permission
-        }
-    } catch {
-        Write-Warning "Error getting permission for team '${TeamSlug}' on repository '${RepoName}': $_"
-    }
-    
-    return $null
-}
-
 function Get-Repos([string]$Org) {
     Write-Output "Getting all repositories in organization '${Org}'..."
     $repos = @()
@@ -249,69 +229,22 @@ function Set-TeamRepoPermission([string]$Org, [string]$TeamSlug, [string]$RepoNa
         return
     }
 
-    # Normalize permission to ensure it's a valid value
-    $validPermissions = @("pull", "triage", "push", "maintain", "admin")
-    $normalizedPermission = switch ($Permission.ToLower()) {
-        "pull" { "pull" } # read
-        "read" { "pull" }
-        "triage" { "triage" }
-        "push" { "push" } # write
-        "write" { "push" }
-        "maintain" { "maintain" }
-        "admin" { "admin" }
-        default { "pull" } # Default to read access if unrecognized
-    }
-    
-    if ($normalizedPermission -ne $Permission) {
-        Write-Output "Normalized permission '${Permission}' to '${normalizedPermission}'."
-    }
-
     if ($DryRun) {
-        Write-Output "Dry-run: Would set permission '${normalizedPermission}' for team '${TeamSlug}' on repository '${RepoName}'."
+        Write-Output "Dry-run: Would set permission '${Permission}' for team '${TeamSlug}' on repository '${RepoName}'."
         return
     }
 
-    Write-Output "Setting permission '${normalizedPermission}' for team '${TeamSlug}' on repository '${RepoName}'..."
+    Write-Output "Setting permission '${Permission}' for team '${TeamSlug}' on repository '${RepoName}'..."
     
     try {
-        gh api --method PUT "orgs/$Org/teams/$TeamSlug/repos/$Org/$RepoName" --field permission="$normalizedPermission"
+        gh api --method PUT "orgs/$Org/teams/$TeamSlug/repos/$Org/$RepoName" --field permission="$Permission"
         if ($LASTEXITCODE -eq 0) {
-            Write-Output "Successfully set permission '${normalizedPermission}' for team '${TeamSlug}' on repository '${RepoName}'."
+            Write-Output "Successfully set permission '${Permission}' for team '${TeamSlug}' on repository '${RepoName}'."
         } else {
-            Write-Warning "Failed to set permission '${normalizedPermission}' for team '${TeamSlug}' on repository '${RepoName}'."
+            Write-Warning "Failed to set permission '${Permission}' for team '${TeamSlug}' on repository '${RepoName}'."
         }
     } catch {
-        Write-Warning "Error setting permission '${normalizedPermission}' for team '${TeamSlug}' on repository '${RepoName}': $_"
-    }
-}
-
-function Create-Repository([string]$Org, [string]$RepoName, [bool]$IsPrivate = $true) {
-    if ([string]::IsNullOrWhiteSpace($RepoName)) {
-        Write-Warning "Cannot create repository with empty name."
-        return $null
-    }
-    
-    if ($DryRun) {
-        Write-Output "Dry-run: Would create repository '${RepoName}' in organization '${Org}'."
-        return $null
-    }
-    
-    Write-Output "Creating repository '${RepoName}' in organization '${Org}'..."
-    
-    try {
-        $visibility = if ($IsPrivate) { "private" } else { "public" }
-        $result = gh api --method POST "orgs/$Org/repos" --field name="$RepoName" --field private="$($IsPrivate.ToString().ToLower())" 2>$null | ConvertFrom-Json
-        
-        if ($result -and $result.name) {
-            Write-Output "Successfully created repository '$($result.name)' in organization '${Org}'."
-            return $result
-        } else {
-            Write-Warning "Failed to create repository '${RepoName}' in organization '${Org}'."
-            return $null
-        }
-    } catch {
-        Write-Warning "Error creating repository '${RepoName}' in organization '${Org}': $_"
-        return $null
+        Write-Warning "Error setting permission '${Permission}' for team '${TeamSlug}' on repository '${RepoName}': $_"
     }
 }
 
@@ -693,75 +626,7 @@ $finalTargetTeams | ForEach-Object { Write-Output "- $($_.name) (slug: $($_.slug
 # 4. For each team, assign repository permissions
 Write-Output "Setting repository permissions for teams..."
 $targetRepos = Get-Repos -Org $TargetOrg
-$sourceRepos = Get-Repos -Org $SourceOrg # Get source repos for visibility information
 
-# Create a hashtable to track repositories that need to be created
-$reposToCreate = @{}
-
-# First pass: identify repositories that need to be created
-Write-Output "Analyzing repositories that need to be migrated..."
-foreach ($sourceTeam in $sourceTeams) {
-    # Skip teams with empty names
-    if ([string]::IsNullOrWhiteSpace($sourceTeam.name) -or [string]::IsNullOrWhiteSpace($sourceTeam.slug)) {
-        Write-Warning "Skipping team with empty name or slug when analyzing repositories."
-        continue
-    }
-    
-    $teamRepos = Get-TeamRepos -Org $SourceOrg -TeamSlug $sourceTeam.slug
-    
-    foreach ($repo in $teamRepos) {
-        # Skip repositories with empty names
-        if ([string]::IsNullOrWhiteSpace($repo.name)) {
-            Write-Warning "Skipping repository with empty name for team '$($sourceTeam.name)'."
-            continue
-        }
-        
-        # Check if the repository exists in the target organization
-        $targetRepo = $targetRepos | Where-Object { $_.name -eq $repo.name }
-        
-        if (-not $targetRepo) {
-            # If repository doesn't exist in target org, mark it for creation
-            $sourceRepo = $sourceRepos | Where-Object { $_.name -eq $repo.name }
-            $isPrivate = $true # Default to private
-            if ($sourceRepo) {
-                $isPrivate = $sourceRepo.private
-            }
-            
-            if (-not $reposToCreate.ContainsKey($repo.name)) {
-                $reposToCreate[$repo.name] = @{
-                    Name = $repo.name
-                    IsPrivate = $isPrivate
-                }
-                Write-Output "Repository '$($repo.name)' will need to be created in target organization."
-            }
-        }
-    }
-}
-
-# Ask user if they want to create missing repositories
-if ($reposToCreate.Count -gt 0) {
-    Write-Output "Found $($reposToCreate.Count) repositories that don't exist in the target organization."
-    
-    if (-not $DryRun) {
-        $createRepos = Read-Host "Do you want to create these repositories in the target organization? (Y/N)"
-        if ($createRepos -eq "Y" -or $createRepos -eq "y") {
-            Write-Output "Creating missing repositories in target organization..."
-            foreach ($repoInfo in $reposToCreate.Values) {
-                $newRepo = Create-Repository -Org $TargetOrg -RepoName $repoInfo.Name -IsPrivate $repoInfo.IsPrivate
-                if ($newRepo) {
-                    # Add newly created repository to the list of target repos
-                    $targetRepos += $newRepo
-                }
-            }
-        } else {
-            Write-Output "Skipping repository creation. Permissions will not be set for non-existent repositories."
-        }
-    } else {
-        Write-Output "Dry-run: Would prompt to create $($reposToCreate.Count) repositories."
-    }
-}
-
-# Second pass: set repository permissions
 foreach ($sourceTeam in $sourceTeams) {
     # Skip teams with empty names
     if ([string]::IsNullOrWhiteSpace($sourceTeam.name) -or [string]::IsNullOrWhiteSpace($sourceTeam.slug)) {
@@ -786,26 +651,7 @@ foreach ($sourceTeam in $sourceTeams) {
             $targetRepo = $targetRepos | Where-Object { $_.name -eq $repo.name }
             
             if ($targetRepo) {
-                # Get the exact permission level
-                $permission = if ($repo.permissions) {
-                    if ($repo.permissions.admin) { "admin" }
-                    elseif ($repo.permissions.maintain) { "maintain" }
-                    elseif ($repo.permissions.push) { "push" } # write
-                    elseif ($repo.permissions.triage) { "triage" }
-                    else { "pull" } # read
-                } elseif ($repo.role_name) {
-                    $repo.role_name
-                } else {
-                    # If we can't determine permission from the API response, get it directly
-                    Get-TeamRepoPermission -Org $SourceOrg -TeamSlug $sourceTeam.slug -RepoName $repo.name
-                }
-                
-                # If still couldn't determine permission, default to read access
-                if (-not $permission) {
-                    $permission = "pull"
-                    Write-Warning "Could not determine permission for team '$($sourceTeam.name)' on repository '$($repo.name)'. Defaulting to 'pull' (read) access."
-                }
-                
+                $permission = if ($repo.role_name) { $repo.role_name } else { "pull" } # Default to "pull" if role_name is not set
                 Write-Output "Setting permission '${permission}' for team '$($targetTeam.name)' on repository '$($targetRepo.name)'."
                 Set-TeamRepoPermission -Org $TargetOrg -TeamSlug $targetTeam.slug -RepoName $targetRepo.name -Permission $permission
             } else {
