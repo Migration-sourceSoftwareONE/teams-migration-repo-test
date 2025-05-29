@@ -189,6 +189,26 @@ function Get-TeamRepos([string]$Org, [string]$TeamSlug) {
     return $repos
 }
 
+function Get-TeamRepoPermission([string]$Org, [string]$TeamSlug, [string]$RepoName) {
+    if ([string]::IsNullOrWhiteSpace($TeamSlug) -or [string]::IsNullOrWhiteSpace($RepoName)) {
+        Write-Warning "Cannot get permission with empty values: TeamSlug='${TeamSlug}', RepoName='${RepoName}'."
+        return $null
+    }
+    
+    try {
+        $output = gh api "orgs/$Org/teams/$TeamSlug/repos/$Org/$RepoName" --jq '.permission' 2>$null
+        if ($output) {
+            $permission = $output.Trim('"')
+            Write-Output "Team '${TeamSlug}' has permission '${permission}' on repository '${RepoName}'."
+            return $permission
+        }
+    } catch {
+        Write-Warning "Error getting permission for team '${TeamSlug}' on repository '${RepoName}': $_"
+    }
+    
+    return $null
+}
+
 function Get-Repos([string]$Org) {
     Write-Output "Getting all repositories in organization '${Org}'..."
     $repos = @()
@@ -224,27 +244,74 @@ function Get-Repos([string]$Org) {
 
 function Set-TeamRepoPermission([string]$Org, [string]$TeamSlug, [string]$RepoName, [string]$Permission) {
     # Validate parameters
-    if ([string]::IsNullOrWhiteSpace($TeamSlug) -or [string]::IsNullOrWhiteSpace($RepoName) -or [string]::IsNullOrWhiteSpace($Permission)) {
-        Write-Warning "Cannot set permission with empty values: TeamSlug='${TeamSlug}', RepoName='${RepoName}', Permission='${Permission}'."
+    if ([string]::IsNullOrWhiteSpace($TeamSlug) -or [string]::IsNullOrWhiteSpace($RepoName)) {
+        Write-Warning "Cannot set permission with empty values: TeamSlug='${TeamSlug}', RepoName='${RepoName}'."
         return
+    }
+
+    # Normalize permission to ensure it's a valid value
+    $validPermissions = @("pull", "triage", "push", "maintain", "admin")
+    $normalizedPermission = switch ($Permission.ToLower()) {
+        "pull" { "pull" } # read
+        "read" { "pull" }
+        "triage" { "triage" }
+        "push" { "push" } # write
+        "write" { "push" }
+        "maintain" { "maintain" }
+        "admin" { "admin" }
+        default { "pull" } # Default to read access if unrecognized
+    }
+    
+    if ($normalizedPermission -ne $Permission) {
+        Write-Output "Normalized permission '${Permission}' to '${normalizedPermission}'."
     }
 
     if ($DryRun) {
-        Write-Output "Dry-run: Would set permission '${Permission}' for team '${TeamSlug}' on repository '${RepoName}'."
+        Write-Output "Dry-run: Would set permission '${normalizedPermission}' for team '${TeamSlug}' on repository '${RepoName}'."
         return
     }
 
-    Write-Output "Setting permission '${Permission}' for team '${TeamSlug}' on repository '${RepoName}'..."
+    Write-Output "Setting permission '${normalizedPermission}' for team '${TeamSlug}' on repository '${RepoName}'..."
     
     try {
-        gh api --method PUT "orgs/$Org/teams/$TeamSlug/repos/$Org/$RepoName" --field permission="$Permission"
+        gh api --method PUT "orgs/$Org/teams/$TeamSlug/repos/$Org/$RepoName" --field permission="$normalizedPermission"
         if ($LASTEXITCODE -eq 0) {
-            Write-Output "Successfully set permission '${Permission}' for team '${TeamSlug}' on repository '${RepoName}'."
+            Write-Output "Successfully set permission '${normalizedPermission}' for team '${TeamSlug}' on repository '${RepoName}'."
         } else {
-            Write-Warning "Failed to set permission '${Permission}' for team '${TeamSlug}' on repository '${RepoName}'."
+            Write-Warning "Failed to set permission '${normalizedPermission}' for team '${TeamSlug}' on repository '${RepoName}'."
         }
     } catch {
-        Write-Warning "Error setting permission '${Permission}' for team '${TeamSlug}' on repository '${RepoName}': $_"
+        Write-Warning "Error setting permission '${normalizedPermission}' for team '${TeamSlug}' on repository '${RepoName}': $_"
+    }
+}
+
+function Create-Repository([string]$Org, [string]$RepoName, [bool]$IsPrivate = $true) {
+    if ([string]::IsNullOrWhiteSpace($RepoName)) {
+        Write-Warning "Cannot create repository with empty name."
+        return $null
+    }
+    
+    if ($DryRun) {
+        Write-Output "Dry-run: Would create repository '${RepoName}' in organization '${Org}'."
+        return $null
+    }
+    
+    Write-Output "Creating repository '${RepoName}' in organization '${Org}'..."
+    
+    try {
+        $visibility = if ($IsPrivate) { "private" } else { "public" }
+        $result = gh api --method POST "orgs/$Org/repos" --field name="$RepoName" --field private="$($IsPrivate.ToString().ToLower())" 2>$null | ConvertFrom-Json
+        
+        if ($result -and $result.name) {
+            Write-Output "Successfully created repository '$($result.name)' in organization '${Org}'."
+            return $result
+        } else {
+            Write-Warning "Failed to create repository '${RepoName}' in organization '${Org}'."
+            return $null
+        }
+    } catch {
+        Write-Warning "Error creating repository '${RepoName}' in organization '${Org}': $_"
+        return $null
     }
 }
 
@@ -312,6 +379,97 @@ function Add-TeamMember([string]$Org, [string]$TeamSlug, [string]$Username, [str
     }
 }
 
+function Get-UserEmail([string]$Org, [string]$Username) {
+    if ([string]::IsNullOrWhiteSpace($Username)) {
+        Write-Warning "Cannot get email for user with empty username."
+        return $null
+    }
+    
+    try {
+        # Note: This requires appropriate permissions to view user emails
+        $output = gh api "users/$Username" --jq '.email' 2>$null
+        if ($output -and $output -ne "null") {
+            return $output.Trim('"')
+        }
+        
+        # If public email not available, try to get from commits
+        # This is a fallback and might not always work
+        Write-Output "Public email not available for user '${Username}', attempting to find email from commits..."
+        
+        # Get repositories the user has contributed to in the org
+        $repos = Get-Repos -Org $Org
+        foreach ($repo in $repos) {
+            $contributors = gh api "repos/$Org/$($repo.name)/contributors" --jq '.[].login' 2>$null
+            if ($contributors -contains $Username) {
+                # Look for commits by this user
+                $commits = gh api "repos/$Org/$($repo.name)/commits?author=$Username&per_page=1" --jq '.[0].commit.author.email' 2>$null
+                if ($commits -and $commits -ne "null") {
+                    return $commits.Trim('"')
+                }
+            }
+        }
+    } catch {
+        Write-Warning "Error retrieving email for user '${Username}': $_"
+    }
+    
+    return $null
+}
+
+function Find-UserByEmail([string]$Org, [string]$Email) {
+    if ([string]::IsNullOrWhiteSpace($Email)) {
+        Write-Warning "Cannot find user with empty email."
+        return $null
+    }
+    
+    Write-Output "Searching for user with email '${Email}' in organization '${Org}'..."
+    
+    # This requires SAML SSO context for enterprise to be fully reliable
+    # But we'll use some approximation methods that may work in many cases
+    
+    try {
+        # Get all users in the organization
+        $orgMembers = @()
+        $page = 1
+        
+        do {
+            $output = gh api "orgs/$Org/members?per_page=100&page=$page" --jq '.' 2>$null
+            if ($output) {
+                $outputJson = $output | ConvertFrom-Json
+                if ($outputJson -and $outputJson.Count -gt 0) {
+                    $orgMembers += $outputJson
+                    $page++
+                } else {
+                    break
+                }
+            } else {
+                break
+            }
+        } while ($true)
+        
+        Write-Output "Found $($orgMembers.Count) members in organization '${Org}'."
+        
+        # Create a cache for email lookups to avoid excessive API calls
+        $emailCache = @{}
+        
+        # First try the most likely path - users with public emails
+        foreach ($member in $orgMembers) {
+            $userEmail = Get-UserEmail -Org $Org -Username $member.login
+            if ($userEmail) {
+                $emailCache[$member.login] = $userEmail
+                if ($userEmail -eq $Email) {
+                    Write-Output "Found user '$($member.login)' with matching email '${Email}'."
+                    return $member.login
+                }
+            }
+        }
+    } catch {
+        Write-Warning "Error searching for user by email '${Email}': $_"
+    }
+    
+    Write-Warning "No user found with email '${Email}' in organization '${Org}'."
+    return $null
+}
+
 function Get-UserMapping([string]$CsvPath) {
     if (-not (Test-Path $CsvPath)) {
         Write-Error "User mapping CSV file not found at path: ${CsvPath}"
@@ -319,34 +477,47 @@ function Get-UserMapping([string]$CsvPath) {
     }
     
     try {
+        Write-Output "Reading user mapping from CSV file '${CsvPath}'..."
         $userMap = Import-Csv -Path $CsvPath
         
         # Validate the CSV has the required columns
         if ($userMap.Count -gt 0) {
             $firstRow = $userMap[0]
-            if (-not ($firstRow.PSObject.Properties.Name -contains "SourceUsername") -or 
-                -not ($firstRow.PSObject.Properties.Name -contains "TargetUsername")) {
-                Write-Warning "User mapping CSV does not contain required columns 'SourceUsername' and/or 'TargetUsername'."
+            
+            # Check for source username and email columns
+            $hasSourceUsername = $firstRow.PSObject.Properties.Name -contains "SourceUsername"
+            $hasEmail = $firstRow.PSObject.Properties.Name -contains "Email"
+            
+            if (-not $hasSourceUsername -or -not $hasEmail) {
+                Write-Warning "User mapping CSV does not contain required columns 'SourceUsername' and/or 'Email'."
                 Write-Warning "Available columns: $($firstRow.PSObject.Properties.Name -join ', ')"
                 
                 # Try to infer column names
-                $possibleSourceColumns = $firstRow.PSObject.Properties.Name | Where-Object { $_ -like "*Source*" -or $_ -like "*From*" }
-                $possibleTargetColumns = $firstRow.PSObject.Properties.Name | Where-Object { $_ -like "*Target*" -or $_ -like "*To*" }
+                $possibleSourceColumns = $firstRow.PSObject.Properties.Name | Where-Object { 
+                    $_ -like "*Source*" -or $_ -like "*User*" -or $_ -like "*Login*" -or $_ -like "*Name*" 
+                }
                 
-                if ($possibleSourceColumns -and $possibleTargetColumns) {
-                    Write-Output "Using inferred column names: Source='$($possibleSourceColumns[0])', Target='$($possibleTargetColumns[0])'"
+                $possibleEmailColumns = $firstRow.PSObject.Properties.Name | Where-Object { 
+                    $_ -like "*Email*" -or $_ -like "*Mail*" 
+                }
+                
+                if ($possibleSourceColumns -and $possibleEmailColumns) {
+                    $sourceCol = $possibleSourceColumns[0]
+                    $emailCol = $possibleEmailColumns[0]
+                    
+                    Write-Output "Using inferred column names: SourceUsername='$sourceCol', Email='$emailCol'"
                     
                     # Create a new array with properly named properties
                     $newUserMap = @()
                     foreach ($row in $userMap) {
                         $newUserMap += [PSCustomObject]@{
-                            SourceUsername = $row.$($possibleSourceColumns[0])
-                            TargetUsername = $row.$($possibleTargetColumns[0])
+                            SourceUsername = $row.$sourceCol
+                            Email = $row.$emailCol
                         }
                     }
                     return $newUserMap
                 } else {
-                    Write-Error "Cannot determine source and target username columns in the CSV. Please rename columns to 'SourceUsername' and 'TargetUsername'."
+                    Write-Error "Cannot determine SourceUsername and Email columns in the CSV. Please rename columns to 'SourceUsername' and 'Email'."
                     exit 1
                 }
             }
@@ -356,6 +527,36 @@ function Get-UserMapping([string]$CsvPath) {
     } catch {
         Write-Error "Failed to read user mapping CSV: $_"
         exit 1
+    }
+}
+
+function Build-EmailToUsernameMap([string]$Org, [array]$UserMapping) {
+    $emailToUsernameMap = @{}
+    
+    Write-Output "Building email-to-username mapping for target organization '${Org}'..."
+    
+    # Cache for target org usernames found by email
+    $emailCache = @{}
+    
+    foreach ($mappingEntry in $UserMapping) {
+        if (-not [string]::IsNullOrWhiteSpace($mappingEntry.Email)) {
+            $targetUsername = Find-UserByEmail -Org $Org -Email $mappingEntry.Email
+            if ($targetUsername) {
+                Write-Output "Mapped email '$($mappingEntry.Email)' to user '$targetUsername' in target organization."
+                $emailToUsernameMap[$mappingEntry.Email] = $targetUsername
+                $emailCache[$mappingEntry.SourceUsername] = $mappingEntry.Email
+            } else {
+                Write-Warning "Could not find user with email '$($mappingEntry.Email)' in target organization."
+            }
+        } else {
+            Write-Warning "Skipping mapping entry for source user '$($mappingEntry.SourceUsername)' due to missing email."
+        }
+    }
+    
+    Write-Output "Built mapping for $($emailToUsernameMap.Count) users based on email."
+    return @{
+        EmailMap = $emailToUsernameMap
+        SourceUserToEmailMap = $emailCache
     }
 }
 
@@ -492,7 +693,75 @@ $finalTargetTeams | ForEach-Object { Write-Output "- $($_.name) (slug: $($_.slug
 # 4. For each team, assign repository permissions
 Write-Output "Setting repository permissions for teams..."
 $targetRepos = Get-Repos -Org $TargetOrg
+$sourceRepos = Get-Repos -Org $SourceOrg # Get source repos for visibility information
 
+# Create a hashtable to track repositories that need to be created
+$reposToCreate = @{}
+
+# First pass: identify repositories that need to be created
+Write-Output "Analyzing repositories that need to be migrated..."
+foreach ($sourceTeam in $sourceTeams) {
+    # Skip teams with empty names
+    if ([string]::IsNullOrWhiteSpace($sourceTeam.name) -or [string]::IsNullOrWhiteSpace($sourceTeam.slug)) {
+        Write-Warning "Skipping team with empty name or slug when analyzing repositories."
+        continue
+    }
+    
+    $teamRepos = Get-TeamRepos -Org $SourceOrg -TeamSlug $sourceTeam.slug
+    
+    foreach ($repo in $teamRepos) {
+        # Skip repositories with empty names
+        if ([string]::IsNullOrWhiteSpace($repo.name)) {
+            Write-Warning "Skipping repository with empty name for team '$($sourceTeam.name)'."
+            continue
+        }
+        
+        # Check if the repository exists in the target organization
+        $targetRepo = $targetRepos | Where-Object { $_.name -eq $repo.name }
+        
+        if (-not $targetRepo) {
+            # If repository doesn't exist in target org, mark it for creation
+            $sourceRepo = $sourceRepos | Where-Object { $_.name -eq $repo.name }
+            $isPrivate = $true # Default to private
+            if ($sourceRepo) {
+                $isPrivate = $sourceRepo.private
+            }
+            
+            if (-not $reposToCreate.ContainsKey($repo.name)) {
+                $reposToCreate[$repo.name] = @{
+                    Name = $repo.name
+                    IsPrivate = $isPrivate
+                }
+                Write-Output "Repository '$($repo.name)' will need to be created in target organization."
+            }
+        }
+    }
+}
+
+# Ask user if they want to create missing repositories
+if ($reposToCreate.Count -gt 0) {
+    Write-Output "Found $($reposToCreate.Count) repositories that don't exist in the target organization."
+    
+    if (-not $DryRun) {
+        $createRepos = Read-Host "Do you want to create these repositories in the target organization? (Y/N)"
+        if ($createRepos -eq "Y" -or $createRepos -eq "y") {
+            Write-Output "Creating missing repositories in target organization..."
+            foreach ($repoInfo in $reposToCreate.Values) {
+                $newRepo = Create-Repository -Org $TargetOrg -RepoName $repoInfo.Name -IsPrivate $repoInfo.IsPrivate
+                if ($newRepo) {
+                    # Add newly created repository to the list of target repos
+                    $targetRepos += $newRepo
+                }
+            }
+        } else {
+            Write-Output "Skipping repository creation. Permissions will not be set for non-existent repositories."
+        }
+    } else {
+        Write-Output "Dry-run: Would prompt to create $($reposToCreate.Count) repositories."
+    }
+}
+
+# Second pass: set repository permissions
 foreach ($sourceTeam in $sourceTeams) {
     # Skip teams with empty names
     if ([string]::IsNullOrWhiteSpace($sourceTeam.name) -or [string]::IsNullOrWhiteSpace($sourceTeam.slug)) {
@@ -517,62 +786,25 @@ foreach ($sourceTeam in $sourceTeams) {
             $targetRepo = $targetRepos | Where-Object { $_.name -eq $repo.name }
             
             if ($targetRepo) {
-                $permission = if ($repo.role_name) { $repo.role_name } else { "pull" } # Default to "pull" if role_name is not set
+                # Get the exact permission level
+                $permission = if ($repo.permissions) {
+                    if ($repo.permissions.admin) { "admin" }
+                    elseif ($repo.permissions.maintain) { "maintain" }
+                    elseif ($repo.permissions.push) { "push" } # write
+                    elseif ($repo.permissions.triage) { "triage" }
+                    else { "pull" } # read
+                } elseif ($repo.role_name) {
+                    $repo.role_name
+                } else {
+                    # If we can't determine permission from the API response, get it directly
+                    Get-TeamRepoPermission -Org $SourceOrg -TeamSlug $sourceTeam.slug -RepoName $repo.name
+                }
+                
+                # If still couldn't determine permission, default to read access
+                if (-not $permission) {
+                    $permission = "pull"
+                    Write-Warning "Could not determine permission for team '$($sourceTeam.name)' on repository '$($repo.name)'. Defaulting to 'pull' (read) access."
+                }
+                
                 Write-Output "Setting permission '${permission}' for team '$($targetTeam.name)' on repository '$($targetRepo.name)'."
-                Set-TeamRepoPermission -Org $TargetOrg -TeamSlug $targetTeam.slug -RepoName $targetRepo.name -Permission $permission
-            } else {
-                Write-Output "Repository '$($repo.name)' not found in target organization. Skipping permission assignment."
-            }
-        }
-    } else {
-        Write-Warning "Team '$($sourceTeam.name)' not found in target organization for permission setting."
-    }
-}
-
-# 5. Add team members using the user mapping
-Write-Output "Adding team members using user mapping from ${UserMappingCsv}..."
-try {
-    $userMapping = Get-UserMapping -CsvPath $UserMappingCsv
-    Write-Output "Loaded user mapping with $($userMapping.Count) entries."
-} catch {
-    Write-Warning "Failed to load user mapping: $_"
-    $userMapping = @()
-}
-
-foreach ($sourceTeam in $sourceTeams) {
-    # Skip teams with empty names
-    if ([string]::IsNullOrWhiteSpace($sourceTeam.name) -or [string]::IsNullOrWhiteSpace($sourceTeam.slug)) {
-        Write-Warning "Skipping team with empty name or slug when adding members."
-        continue
-    }
-    
-    $targetTeam = $finalTargetTeams | Where-Object { $_.name -eq $sourceTeam.name }
-    
-    if ($targetTeam) {
-        Write-Output "Processing members for team: $($targetTeam.name)"
-        $teamMembers = Get-TeamMembers -Org $SourceOrg -TeamSlug $sourceTeam.slug
-        
-        foreach ($member in $teamMembers) {
-            # Skip members with empty logins
-            if ([string]::IsNullOrWhiteSpace($member.login)) {
-                Write-Warning "Skipping member with empty login for team '$($targetTeam.name)'."
-                continue
-            }
-            
-            # Find the mapped username for this user
-            $mappedUser = $userMapping | Where-Object { $_.SourceUsername -eq $member.login }
-            
-            if ($mappedUser -and -not [string]::IsNullOrWhiteSpace($mappedUser.TargetUsername)) {
-                $targetUsername = $mappedUser.TargetUsername
-                Write-Output "Adding user '${targetUsername}' to team '$($targetTeam.name)'."
-                Add-TeamMember -Org $TargetOrg -TeamSlug $targetTeam.slug -Username $targetUsername -Role ($member.role ?? "member")
-            } else {
-                Write-Warning "No mapping found for user '$($member.login)' in team '$($sourceTeam.name)'."
-            }
-        }
-    } else {
-        Write-Warning "Team '$($sourceTeam.name)' not found in target organization for member assignment."
-    }
-}
-
-Write-Output "GitHub Teams migration completed."
+                Set-TeamRepo
