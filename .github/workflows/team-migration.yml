@@ -1,42 +1,54 @@
-name: Migrate GitHub Teams
+name: "Migrate GitHub Teams"
 
 on:
   workflow_dispatch:
     inputs:
-      source-org:
-        description: 'Source GitHub organization name'
+      source_pat:
+        description: 'GitHub Personal Access Token for source organization'
         required: true
-        type: string
-      target-org:
-        description: 'Target GitHub organization name'
+        default: ''
+      target_pat:
+        description: 'GitHub Personal Access Token for target organization'
         required: true
-        type: string
-      mapping-csv-path:
+        default: ''
+      source_org:
+        description: 'Source organization name'
+        required: true
+      target_org:
+        description: 'Target organization name'
+        required: true
+      user_mapping_csv:
         description: 'Path to user mapping CSV file'
         required: true
-        default: 'user-map.csv'
-        type: string
+      dry_run:
+        description: 'Enable dry-run mode (true/false)'
+        required: false
+        default: 'false'
 
 jobs:
-  migrate:
+  migrate-teams:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - name: Checkout repository
+        uses: actions/checkout@v3
 
       - name: Install GitHub CLI
         run: |
           sudo apt-get update
           sudo apt-get install -y gh
 
-      - name: Run Migration Script
-        env:
-          GH_TOKEN: ${{ secrets.TARGET_PAT }}
-          SOURCE_PAT: ${{ secrets.SOURCE_PAT }}
-          TARGET_PAT: ${{ secrets.TARGET_PAT }}
+      - name: Install PowerShell
         run: |
-          pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File migration/Migrate-GitHubTeams.ps1 \
-            -SourceOrg "${{ github.event.inputs.source-org }}" \
-            -TargetOrg "${{ github.event.inputs.target-org }}" \
-            -UserMappingCsv "./user-map.csv" \
-            -SourcePAT "${{ secrets.SOURCE_PAT }}" \
-            -TargetPAT "${{ secrets.TARGET_PAT }}"  \
+          sudo apt-get install -y powershell
+
+      - name: Run Team Migration Script
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File migration/Migrate-GitHubTeams.ps1 `
+            -SourcePAT "${{ github.event.inputs.source_pat }}" `
+            -TargetPAT "${{ github.event.inputs.target_pat }}" `
+            -SourceOrg "${{ github.event.inputs.source_org }}" `
+            -TargetOrg "${{ github.event.inputs.target_org }}" `
+            -UserMappingCsv "${{ github.event.inputs.user_mapping_csv }}" `
+            $([ "${{ github.event.inputs.dry_run }}" == 'true' ] && echo "-DryRun")
