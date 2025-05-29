@@ -3,7 +3,8 @@ param(
     [Parameter(Mandatory=$true)][string]$TargetPAT,
     [Parameter(Mandatory=$true)][string]$SourceOrg,
     [Parameter(Mandatory=$true)][string]$TargetOrg,
-    [Parameter(Mandatory=$true)][string]$UserMappingCsv
+    [Parameter(Mandatory=$true)][string]$UserMappingCsv,
+    [switch]$DryRun
 )
 
 function GhAuth([string]$Token) {
@@ -42,6 +43,11 @@ function Get-TeamByName([string]$Org, [string]$Name) {
 }
 
 function Create-Team([string]$Org, [string]$Name, [string]$Description, [string]$Privacy, [string]$ParentTeamSlug) {
+    if ($DryRun) {
+        Write-Output "Dry-run: Would create team '$Name' in organization '$Org'."
+        return
+    }
+
     $body = @{
         name        = $Name
         description = $Description
@@ -89,6 +95,11 @@ function Get-Repos([string]$Org) {
 }
 
 function Set-TeamRepoPermission([string]$Org, [string]$TeamSlug, [string]$RepoName, [string]$Permission) {
+    if ($DryRun) {
+        Write-Output "Dry-run: Would set permission '$Permission' for team '$TeamSlug' on repo '$RepoName'."
+        return
+    }
+
     try {
         gh api --method PUT "orgs/$Org/teams/$TeamSlug/repos/$Org/$RepoName" -f permission="$Permission" 2>$null | Out-Null
     }
