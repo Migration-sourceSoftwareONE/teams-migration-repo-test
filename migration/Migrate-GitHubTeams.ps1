@@ -24,7 +24,7 @@ function GhAuth([string]$EnvVarName) {
 }
 
 function Get-Teams([string]$Org) {
-    Write-Output "Retrieving teams from organization $Org..."
+    Write-Output "Retrieving teams from organization ${Org}..."
     $teams = @()
     $page = 1
     do {
@@ -43,34 +43,34 @@ function Get-Teams([string]$Org) {
                 break
             }
         } catch {
-            Write-Error "Error retrieving teams from organization $Org (page $page): $_"
+            Write-Error "Error retrieving teams from organization ${Org} (page $page): $_"
             break
         }
     } while ($true)
-    Write-Output "Total teams found in $Org: $($teams.Count)"
+    Write-Output "Total teams found in ${Org}: $($teams.Count)"
     return $teams
 }
 
 function Get-TeamByName([string]$Org, [string]$Name) {
-    Write-Output "Looking for team with name '$Name' in organization $Org..."
+    Write-Output "Looking for team with name '${Name}' in organization ${Org}..."
     $teams = Get-Teams -Org $Org
     $matchingTeam = $teams | Where-Object { $_.name -eq $Name }
     if ($matchingTeam) {
         Write-Output "Found team: $($matchingTeam.name) (slug: $($matchingTeam.slug))"
         return $matchingTeam
     } else {
-        Write-Output "No team found with name '$Name' in organization $Org."
+        Write-Output "No team found with name '${Name}' in organization ${Org}."
         return $null
     }
 }
 
 function Create-Team([string]$Org, [string]$Name, [string]$Description, [string]$Privacy, [string]$ParentTeamSlug) {
     if ($DryRun) {
-        Write-Output "Dry-run: Would create team '$Name' in organization '$Org'."
+        Write-Output "Dry-run: Would create team '${Name}' in organization '${Org}'."
         return
     }
 
-    Write-Output "Creating team '$Name' in organization '$Org'..."
+    Write-Output "Creating team '${Name}' in organization '${Org}'..."
     
     $body = @{
         name        = $Name
@@ -84,7 +84,7 @@ function Create-Team([string]$Org, [string]$Name, [string]$Description, [string]
             Write-Output "Found parent team with ID: $($parentTeam.id)"
             $body.parent_team_id = $parentTeam.id
         } else {
-            Write-Warning "Parent team with slug '$ParentTeamSlug' not found. Creating '$Name' without parent."
+            Write-Warning "Parent team with slug '${ParentTeamSlug}' not found. Creating '${Name}' without parent."
         }
     }
     
@@ -97,14 +97,14 @@ function Create-Team([string]$Org, [string]$Name, [string]$Description, [string]
         Write-Output "API Response: $response"
         
         if ($response -match "already exists") {
-            Write-Warning "Team '$Name' already exists in organization '$Org'."
+            Write-Warning "Team '${Name}' already exists in organization '${Org}'."
         }
         
         # Verify the team was created by looking it up
         Start-Sleep -Seconds 2  # Brief pause to allow API propagation
         $createdTeam = Get-TeamByName -Org $Org -Name $Name
         if ($createdTeam) {
-            Write-Output "Successfully created team '$Name' with slug '$($createdTeam.slug)'."
+            Write-Output "Successfully created team '${Name}' with slug '$($createdTeam.slug)'."
             return $createdTeam
         } else {
             Write-Warning "Team creation seemed successful but unable to retrieve the new team."
@@ -112,7 +112,7 @@ function Create-Team([string]$Org, [string]$Name, [string]$Description, [string]
         }
     }
     catch {
-        Write-Warning "Failed to create team '$Name' in '$Org': $_"
+        Write-Warning "Failed to create team '${Name}' in '${Org}': $_"
         Write-Output "Full error: $($Error[0])"
         return $null
     }
@@ -146,15 +146,15 @@ function Get-Repos([string]$Org) {
 
 function Set-TeamRepoPermission([string]$Org, [string]$TeamSlug, [string]$RepoName, [string]$Permission) {
     if ($DryRun) {
-        Write-Output "Dry-run: Would set permission '$Permission' for team '$TeamSlug' on repository '$RepoName'."
+        Write-Output "Dry-run: Would set permission '${Permission}' for team '${TeamSlug}' on repository '${RepoName}'."
         return
     }
 
     try {
         gh api --method PUT "orgs/$Org/teams/$TeamSlug/repos/$Org/$RepoName" --raw-field permission="$Permission"
-        Write-Output "Set permission '$Permission' for team '$TeamSlug' on repository '$RepoName'."
+        Write-Output "Set permission '${Permission}' for team '${TeamSlug}' on repository '${RepoName}'."
     } catch {
-        Write-Warning "Failed to set permission '$Permission' for team '$TeamSlug' on repository '$RepoName': $_"
+        Write-Warning "Failed to set permission '${Permission}' for team '${TeamSlug}' on repository '${RepoName}': $_"
     }
 }
 
@@ -173,21 +173,21 @@ function Get-TeamMembers([string]$Org, [string]$TeamSlug) {
 
 function Add-TeamMember([string]$Org, [string]$TeamSlug, [string]$Username, [string]$Role = "member") {
     if ($DryRun) {
-        Write-Output "Dry-run: Would add user '$Username' to team '$TeamSlug' with role '$Role'."
+        Write-Output "Dry-run: Would add user '${Username}' to team '${TeamSlug}' with role '${Role}'."
         return
     }
     
     try {
         gh api --method PUT "orgs/$Org/teams/$TeamSlug/memberships/$Username" --raw-field role="$Role"
-        Write-Output "Added user '$Username' to team '$TeamSlug' with role '$Role'."
+        Write-Output "Added user '${Username}' to team '${TeamSlug}' with role '${Role}'."
     } catch {
-        Write-Warning "Failed to add user '$Username' to team '$TeamSlug': $_"
+        Write-Warning "Failed to add user '${Username}' to team '${TeamSlug}': $_"
     }
 }
 
 function Get-UserMapping([string]$CsvPath) {
     if (-not (Test-Path $CsvPath)) {
-        Write-Error "User mapping CSV file not found at path: $CsvPath"
+        Write-Error "User mapping CSV file not found at path: ${CsvPath}"
         exit 1
     }
     
@@ -201,11 +201,11 @@ function Get-UserMapping([string]$CsvPath) {
 }
 
 # Main execution starts here
-Write-Output "Starting GitHub Teams migration from '$SourceOrg' to '$TargetOrg'"
+Write-Output "Starting GitHub Teams migration from '${SourceOrg}' to '${TargetOrg}'"
 
 # Check if the user mapping file exists
 if (-not (Test-Path $UserMappingCsv)) {
-    Write-Error "User mapping file not found: $UserMappingCsv"
+    Write-Error "User mapping file not found: ${UserMappingCsv}"
     exit 1
 }
 
@@ -214,7 +214,7 @@ Write-Output "Authenticating with source organization..."
 GhAuth "SOURCE_PAT"
 
 # 2. Get all teams from the source organization
-Write-Output "Fetching teams from source organization '$SourceOrg'..."
+Write-Output "Fetching teams from source organization '${SourceOrg}'..."
 $sourceTeams = Get-Teams -Org $SourceOrg
 Write-Output "Found $($sourceTeams.Count) teams in source organization."
 
@@ -270,13 +270,13 @@ foreach ($team in $sourceTeams | Where-Object { $_.parent }) {
         $parentTeam = $targetTeams | Where-Object { $_.name -eq $parentTeamName }
         
         if ($parentTeam) {
-            Write-Output "Creating child team '$($team.name)' under parent '$parentTeamName' in target organization."
+            Write-Output "Creating child team '$($team.name)' under parent '${parentTeamName}' in target organization."
             $result = Create-Team -Org $TargetOrg -Name $team.name -Description $team.description -Privacy $team.privacy -ParentTeamSlug $parentTeam.slug
             if ($result) {
                 $processedTeams[$team.name] = $result
             }
         } else {
-            Write-Output "Parent team '$parentTeamName' not found in target organization. Creating '$($team.name)' without parent."
+            Write-Output "Parent team '${parentTeamName}' not found in target organization. Creating '$($team.name)' without parent."
             $result = Create-Team -Org $TargetOrg -Name $team.name -Description $team.description -Privacy $team.privacy
             if ($result) {
                 $processedTeams[$team.name] = $result
@@ -309,7 +309,7 @@ foreach ($sourceTeam in $sourceTeams) {
             
             if ($targetRepo) {
                 $permission = if ($repo.role_name) { $repo.role_name } else { "pull" } # Default to "pull" if role_name is not set
-                Write-Output "Setting permission '$permission' for team '$($targetTeam.name)' on repository '$($targetRepo.name)'."
+                Write-Output "Setting permission '${permission}' for team '$($targetTeam.name)' on repository '$($targetRepo.name)'."
                 Set-TeamRepoPermission -Org $TargetOrg -TeamSlug $targetTeam.slug -RepoName $targetRepo.name -Permission $permission
             } else {
                 Write-Output "Repository '$($repo.name)' not found in target organization. Skipping permission assignment."
@@ -321,7 +321,7 @@ foreach ($sourceTeam in $sourceTeams) {
 }
 
 # 5. Add team members using the user mapping
-Write-Output "Adding team members using user mapping from $UserMappingCsv..."
+Write-Output "Adding team members using user mapping from ${UserMappingCsv}..."
 try {
     $userMapping = Get-UserMapping -CsvPath $UserMappingCsv
     Write-Output "Loaded user mapping with $($userMapping.Count) entries."
@@ -343,7 +343,7 @@ foreach ($sourceTeam in $sourceTeams) {
             
             if ($mappedUser) {
                 $targetUsername = $mappedUser.TargetUsername
-                Write-Output "Adding user '$targetUsername' to team '$($targetTeam.name)'."
+                Write-Output "Adding user '${targetUsername}' to team '$($targetTeam.name)'."
                 Add-TeamMember -Org $TargetOrg -TeamSlug $targetTeam.slug -Username $targetUsername -Role $member.role
             } else {
                 Write-Warning "No mapping found for user '$($member.login)' in team '$($sourceTeam.name)'."
