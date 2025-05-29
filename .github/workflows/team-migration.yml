@@ -3,22 +3,11 @@ name: "Migrate GitHub Teams"
 on:
   workflow_dispatch:
     inputs:
-      source_pat:
-        description: 'GitHub Personal Access Token for source organization'
-        required: true
-        default: ''
-      target_pat:
-        description: 'GitHub Personal Access Token for target organization'
-        required: true
-        default: ''
       source_org:
         description: 'Source organization name'
         required: true
       target_org:
         description: 'Target organization name'
-        required: true
-      user_mapping_csv:
-        description: 'Path to user mapping CSV file'
         required: true
       dry_run:
         description: 'Enable dry-run mode (true/false)'
@@ -43,12 +32,11 @@ jobs:
 
       - name: Run Team Migration Script
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SOURCE_PAT: ${{ secrets.SOURCE_PAT }}
+          TARGET_PAT: ${{ secrets.TARGET_PAT }}
         run: |
           pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File migration/Migrate-GitHubTeams.ps1 `
-            -SourcePAT "${{ github.event.inputs.source_pat }}" `
-            -TargetPAT "${{ github.event.inputs.target_pat }}" `
             -SourceOrg "${{ github.event.inputs.source_org }}" `
             -TargetOrg "${{ github.event.inputs.target_org }}" `
-            -UserMappingCsv "${{ github.event.inputs.user_mapping_csv }}" `
+            -UserMappingCsv "user-map.csv" `
             $([ "${{ github.event.inputs.dry_run }}" == 'true' ] && echo "-DryRun")
