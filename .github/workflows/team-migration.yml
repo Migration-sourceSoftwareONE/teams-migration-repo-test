@@ -1,44 +1,25 @@
-name: "Migrate Variables & Secrets"
+name: "Migrate GitHub Teams"
 
 on:
   workflow_dispatch:
     inputs:
       source_org:
-        description: 'Source organization'
+        description: 'Source organization name'
         required: true
-      source_repo:
-        description: 'Source repository (leave empty to migrate all)'
-        required: false
       target_org:
-        description: 'Target organization'
+        description: 'Target organization name'
         required: true
-      target_repo:
-        description: 'Target repository'
-        required: true
-      scope:
-        description: >-
-          Comma-separated scopes:
-          actionsreposecrets,
-          actionsrepovariables,
-          dependabotreposecrets,
-          codespacesreposecrets,
-          actionsenvsecrets,
-          actionsenvvariables,
-          actionsorgsecrets,
-          actionsorgvariables,
-          dependabotorgsecrets,
-          codespacesorgsecrets
-        required: true
-      force:
-        description: 'Overwrite existing values?'
+      dry_run:
+        description: 'Enable dry-run mode (true/false)'
         required: false
         default: 'false'
 
 jobs:
-  migrate:
+  migrate-teams:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - name: Checkout repository
+        uses: actions/checkout@v3
 
       - name: Install GitHub CLI
         run: |
@@ -49,15 +30,13 @@ jobs:
         run: |
           sudo apt-get install -y powershell
 
-      - name: Run Migration Script
+      - name: Run Team Migration Script
         env:
           SOURCE_PAT: ${{ secrets.SOURCE_PAT }}
           TARGET_PAT: ${{ secrets.TARGET_PAT }}
         run: |
-          pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File migration/Migrate-GitHubVariablesAndSecrets.ps1 `
+          pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File migration/Migrate-GitHubTeams.ps1 `
             -SourceOrg "${{ github.event.inputs.source_org }}" `
-            -SourceRepo "${{ github.event.inputs.source_repo }}" `
             -TargetOrg "${{ github.event.inputs.target_org }}" `
-            -TargetRepo "${{ github.event.inputs.target_repo }}" `
-            -Scope "${{ github.event.inputs.scope }}" `
-            $([ "${{ github.event.inputs.force }}" == 'true' ] && echo "-Force")
+            -UserMappingCsv "user-map.csv" `
+            $([ "${{ github.event.inputs.dry_run }}" == 'true' ] && echo "-DryRun")
