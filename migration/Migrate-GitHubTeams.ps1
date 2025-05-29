@@ -1,42 +1,98 @@
-name: "Migrate GitHub Teams"
+param(
+    [Parameter(Mandatory=$true)][string]$SourceOrg,
+    [Parameter(Mandatory=$true)][string]$TargetOrg,
+    [Parameter(Mandatory=$true)][string]$UserMappingCsv,
+    [switch]$DryRun
+)
 
-on:
-  workflow_dispatch:
-    inputs:
-      source_org:
-        description: 'Source organization name'
-        required: true
-      target_org:
-        description: 'Target organization name'
-        required: true
-      dry_run:
-        description: 'Enable dry-run mode (true/false)'
-        required: false
-        default: 'false'
+function GhAuth([string]$EnvVarName) {
+    $Token = (Get-Item "env:$EnvVarName").Value
+    if (-not $Token) {
+        Write-Error "Environment variable $EnvVarName is not set or empty."
+        exit 1
+    }
 
-jobs:
-  migrate-teams:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v3
+    $env:GH_TOKEN = $Token
 
-      - name: Install GitHub CLI
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y gh
+    $authResult = gh auth status 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "GitHub CLI authentication failed using $EnvVarName."
+        exit 1
+    } else {
+        Write-Output "GitHub CLI authenticated using $EnvVarName."
+    }
+}
 
-      - name: Install PowerShell
-        run: |
-          sudo apt-get install -y powershell
+function Get-Teams([string]$Org) {
+    $teams = @()
+    $page = 1
+    do {
+        $output = gh api "orgs/$Org/teams?per_page=100&page=$page" -q '.' 2>$null | ConvertFrom-Json
+        if ($output) {
+            $teams += $output
+            $page++
+        }
+    } while ($output.Count -eq 100)
+    return $teams
+}
 
-      - name: Run Team Migration Script
-        env:
-          SOURCE_PAT: ${{ secrets.SOURCE_PAT }}
-          TARGET_PAT: ${{ secrets.TARGET_PAT }}
-        run: |
-          pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File migration/Migrate-GitHubTeams.ps1 `
-            -SourceOrg "${{ github.event.inputs.source_org }}" `
-            -TargetOrg "${{ github.event.inputs.target_org }}" `
-            -UserMappingCsv "user-map.csv" `
-            $([ "${{ github.event.inputs.dry_run }}" == 'true' ] && echo "-DryRun")
+function Get-TeamByName([string]$Org, [string]$Name) {
+    $teams = Get-Teams -Org $Org
+    return $teams | Where-Object { $_.name -eq $Name }
+}
+
+function Create-Team([string]$Org, [string]$Name, [string]$Description, [string]$Privacy, [string]$ParentTeamSlug) {
+    if ($DryRun) {
+        Write-Output "Dry-run: Would create team '$Name' in organization '$Org'."
+        return
+    }
+
+    $body = @{
+        name        = $Name
+        description = $Description
+        privacy     = $Privacy
+    }
+    if ($ParentTeamSlug) {
+        $body.parent_team_id = $ParentTeamSlug
+    }
+    $jsonBody = $body | ConvertTo-Json -Depth 5
+
+    try {
+        $result = gh api --method POST "orgs/$Org/teams" -f body="$jsonBody" 2>$null | ConvertFrom-Json
+        return $result
+    }
+    catch {
+        Write-Warning ("Failed to create team {0} in {1}: {2}" -f $Name, $Org, $_)
+        return $null
+    }
+}
+
+function Get-TeamRepos([string]$Org, [string]$TeamSlug) {
+    $repos = @()
+    $page = 1
+    do {
+        $output = gh api "orgs/$Org/teams/$TeamSlug/repos?per_page=100&page=$page" -q '.' 2>$null | ConvertFrom-Json
+        if ($output) {
+            $repos += $output
+            $page++
+        }
+    } while ($output.Count -eq 100)
+    return $repos
+}
+
+function Get-Repos([string]$Org) {
+    $repos = @()
+    $page = 1
+    do {
+        $output = gh api "orgs/$Org/repos?per_page=100&page=$page" -q '.' 2>$null | ConvertFrom-Json
+        if ($output) {
+            $repos += $output
+            $page++
+        }
+    } while ($output.Count -eq 100)
+    return $repos
+}
+
+function Set-TeamRepoPermission([string]$Org, [string]$TeamSlug, [string]$RepoName, [string]$Permission) {
+    if ($DryRun) {
+        Write-Output "Dry-run: Would set permission '$Permission' for team '$TeamSlug' on
