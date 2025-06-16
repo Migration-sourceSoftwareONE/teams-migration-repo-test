@@ -33,10 +33,16 @@ jobs:
         run: |
           sudo apt-get install -y powershell
 
+      - name: Generate GitHub App Token
+        id: generate_token
+        uses: tibdex/github-app-token@v2
+        with:
+          app_id: ${{ secrets.GH_APP_ID }}
+          private_key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+
       - name: Run Team Migration Script
         env:
-          SOURCE_PAT: ${{ secrets.SOURCE_PAT }}
-          TARGET_PAT: ${{ secrets.TARGET_PAT }}
+          GH_TOKEN: ${{ steps.generate_token.outputs.token }}
         run: |
           pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File migration/Migrate-GitHubTeams.ps1 \
             -SourceOrg "${{ github.event.inputs.source_org }}" \
