@@ -178,12 +178,12 @@ function Set-TeamRepoPermission([string]$Org, [string]$TeamSlug, [string]$RepoNa
                 Write-Output "Successfully set permission '${Permission}' for team '${TeamSlug}' on repository '${RepoName}'."
                 $success = $true
             } else {
-                Write-Warning "Attempt $attempt: Failed to set permission '${Permission}' for team '${TeamSlug}' on repository '${RepoName}'. Retrying in 60s."
+                Write-Warning "Attempt ${attempt}: Failed to set permission '${Permission}' for team '${TeamSlug}' on repository '${RepoName}'. Retrying in 60s."
                 Start-Sleep -Seconds 60
                 $attempt++
             }
         } catch {
-            Write-Warning "Attempt $attempt: Error setting permission '${Permission}' for team '${TeamSlug}' on repository '${RepoName}': $_. Retrying in 60s."
+            Write-Warning "Attempt ${attempt}: Error setting permission '${Permission}' for team '${TeamSlug}' on repository '${RepoName}': $_. Retrying in 60s."
             Start-Sleep -Seconds 60
             $attempt++
         }
