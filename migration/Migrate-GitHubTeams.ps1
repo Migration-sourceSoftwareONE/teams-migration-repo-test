@@ -5,19 +5,18 @@ param(
     [switch]$DryRun
 )
 
-function GhAuth([string]$EnvVarName) {
-    $Token = (Get-Item "env:$EnvVarName").Value
+function Switch-GHAuth([string]$Token, [string]$Context) {
     if (-not $Token) {
-        Write-Error "Environment variable ${EnvVarName} is not set or empty."
+        Write-Error "Required GitHub App token for $Context is missing."
         exit 1
     }
     $env:GH_TOKEN = $Token
     $authResult = gh auth status 2>$null
     if ($LASTEXITCODE -ne 0) {
-        Write-Error "GitHub CLI authentication failed using ${EnvVarName}."
+        Write-Error "GitHub CLI authentication failed for $Context."
         exit 1
     } else {
-        Write-Output "GitHub CLI authenticated using ${EnvVarName}."
+        Write-Output "GitHub CLI authenticated using token for $Context."
     }
 }
 
@@ -45,10 +44,9 @@ function Get-Teams([string]$Org) {
             break
         }
     } while ($true)
-    # Filter out any teams with empty names or slugs
-    $validTeams = $teams | Where-Object { -not [string]::IsNullOrWhiteSpace($_.name) -and -not [string]::IsNullOrWhiteSpace($_.slug) }
+    $validTeams = $teams | Where-Object { -not [string]::IsNullOrWhiteSpace($_.name) }
     if ($teams.Count -ne $validTeams.Count) {
-        Write-Warning "Filtered out $($teams.Count - $validTeams.Count) teams with empty names or slugs."
+        Write-Warning "Filtered out $($teams.Count - $validTeams.Count) teams with empty names."
     }
     Write-Output "Total valid teams found in ${Org}: $($validTeams.Count)"
     return $validTeams
@@ -59,16 +57,9 @@ function Get-TeamByName([string]$Org, [string]$Name) {
         Write-Warning "Cannot lookup team with empty name in organization ${Org}."
         return $null
     }
-    Write-Output "Looking for team with name '${Name}' in organization ${Org}..."
     $teams = Get-Teams -Org $Org
     $matchingTeam = $teams | Where-Object { $_.name -eq $Name }
-    if ($matchingTeam) {
-        Write-Output "Found team: $($matchingTeam.name) (slug: $($matchingTeam.slug))"
-        return $matchingTeam
-    } else {
-        Write-Output "No team found with name '${Name}' in organization ${Org}."
-        return $null
-    }
+    return $matchingTeam
 }
 
 function Create-Team([string]$Org, [string]$Name, [string]$Description, [string]$Privacy, [string]$ParentTeamSlug) {
@@ -80,10 +71,8 @@ function Create-Team([string]$Org, [string]$Name, [string]$Description, [string]
         Write-Output "Dry-run: Would create team '${Name}' in organization '${Org}'."
         return
     }
-    Write-Output "Creating team '${Name}' in organization '${Org}'..."
     if ([string]::IsNullOrWhiteSpace($Privacy)) {
         $Privacy = "closed"
-        Write-Output "Using default privacy setting: closed"
     }
     if ([string]::IsNullOrWhiteSpace($Description)) {
         $Description = "Team $Name"
@@ -97,7 +86,6 @@ function Create-Team([string]$Org, [string]$Name, [string]$Description, [string]
         if (-not [string]::IsNullOrWhiteSpace($ParentTeamSlug)) {
             $parentTeam = gh api "orgs/$Org/teams/$ParentTeamSlug" --jq '.' 2>$null | ConvertFrom-Json
             if ($parentTeam -and $parentTeam.id) {
-                Write-Output "Found parent team '${ParentTeamSlug}' with ID: $($parentTeam.id)"
                 $jsonBodyObj = $jsonBody | ConvertFrom-Json
                 $jsonBodyObj | Add-Member -Name "parent_team_id" -Value $parentTeam.id -MemberType NoteProperty
                 $jsonBody = $jsonBodyObj | ConvertTo-Json -Compress
@@ -105,24 +93,15 @@ function Create-Team([string]$Org, [string]$Name, [string]$Description, [string]
                 Write-Warning "Parent team '${ParentTeamSlug}' not found. Creating '${Name}' without parent."
             }
         }
-        Write-Output "Team creation request body: $jsonBody"
         $tempFile = New-TemporaryFile
         Set-Content -Path $tempFile.FullName -Value $jsonBody
         $response = gh api --method POST "orgs/$Org/teams" --input $tempFile.FullName
         Remove-Item -Path $tempFile.FullName
         Start-Sleep -Seconds 2
         $createdTeam = Get-TeamByName -Org $Org -Name $Name
-        if ($createdTeam) {
-            Write-Output "Successfully created team '${Name}' with slug '$($createdTeam.slug)'."
-            return $createdTeam
-        } else {
-            Write-Warning "Team creation API call was made but team '${Name}' not found afterward."
-            return $null
-        }
-    }
-    catch {
+        return $createdTeam
+    } catch {
         Write-Warning "Failed to create team '${Name}' in organization '${Org}': $_"
-        Write-Output "Error details: $($Error[0])"
         return $null
     }
 }
@@ -132,7 +111,6 @@ function Get-TeamRepos([string]$Org, [string]$TeamSlug) {
         Write-Warning "Cannot get repositories for a team with empty slug."
         return @()
     }
-    Write-Output "Getting repositories for team '${TeamSlug}' in organization '${Org}'..."
     $repos = @()
     $page = 1
     try {
@@ -143,7 +121,6 @@ function Get-TeamRepos([string]$Org, [string]$TeamSlug) {
                 if ($outputJson -and $outputJson.Count -gt 0) {
                     $repos += $outputJson
                     $page++
-                    Write-Output "Retrieved $($outputJson.Count) repos for team '${TeamSlug}' (page $($page-1))."
                 } else {
                     break
                 }
@@ -151,16 +128,13 @@ function Get-TeamRepos([string]$Org, [string]$TeamSlug) {
                 break
             }
         } while ($true)
-    }
-    catch {
+    } catch {
         Write-Warning "Error retrieving repositories for team '${TeamSlug}': $_"
     }
-    Write-Output "Total repositories for team '${TeamSlug}': $($repos.Count)"
     return $repos
 }
 
 function Get-Repos([string]$Org) {
-    Write-Output "Getting all repositories in organization '${Org}'..."
     $repos = @()
     $page = 1
     try {
@@ -171,7 +145,6 @@ function Get-Repos([string]$Org) {
                 if ($outputJson -and $outputJson.Count -gt 0) {
                     $repos += $outputJson
                     $page++
-                    Write-Output "Retrieved $($outputJson.Count) repos from '${Org}' (page $($page-1))."
                 } else {
                     break
                 }
@@ -179,13 +152,10 @@ function Get-Repos([string]$Org) {
                 break
             }
         } while ($true)
-    }
-    catch {
+    } catch {
         Write-Warning "Error retrieving repositories for organization '${Org}': $_"
     }
-    # Filter out repositories with empty names
     $validRepos = $repos | Where-Object { -not [string]::IsNullOrWhiteSpace($_.name) }
-    Write-Output "Total valid repositories for organization '${Org}': $($validRepos.Count)"
     return $validRepos
 }
 
@@ -198,17 +168,30 @@ function Set-TeamRepoPermission([string]$Org, [string]$TeamSlug, [string]$RepoNa
         Write-Output "Dry-run: Would set permission '${Permission}' for team '${TeamSlug}' on repository '${RepoName}'."
         return
     }
-    Write-Output "Setting permission '${Permission}' for team '${TeamSlug}' on repository '${RepoName}'..."
-    try {
-        gh api --method PUT "orgs/$Org/teams/$TeamSlug/repos/$Org/$RepoName" --field permission="$Permission"
-        if ($LASTEXITCODE -eq 0) {
-            Write-Output "Successfully set permission '${Permission}' for team '${TeamSlug}' on repository '${RepoName}'."
-        } else {
-            Write-Warning "Failed to set permission '${Permission}' for team '${TeamSlug}' on repository '${RepoName}'."
+    $maxAttempts = 5
+    $success = $false
+    $attempt = 1
+    while (-not $success -and $attempt -le $maxAttempts) {
+        try {
+            gh api --method PUT "orgs/$Org/teams/$TeamSlug/repos/$Org/$RepoName" --field permission="$Permission"
+            if ($LASTEXITCODE -eq 0) {
+                Write-Output "Successfully set permission '${Permission}' for team '${TeamSlug}' on repository '${RepoName}'."
+                $success = $true
+            } else {
+                Write-Warning "Attempt $attempt: Failed to set permission '${Permission}' for team '${TeamSlug}' on repository '${RepoName}'. Retrying in 60s."
+                Start-Sleep -Seconds 60
+                $attempt++
+            }
+        } catch {
+            Write-Warning "Attempt $attempt: Error setting permission '${Permission}' for team '${TeamSlug}' on repository '${RepoName}': $_. Retrying in 60s."
+            Start-Sleep -Seconds 60
+            $attempt++
         }
-    } catch {
-        Write-Warning "Error setting permission '${Permission}' for team '${TeamSlug}' on repository '${RepoName}': $_"
     }
+    if (-not $success) {
+        Write-Warning "Giving up on setting permission '${Permission}' for team '${TeamSlug}' on repository '${RepoName}' after $maxAttempts attempts."
+    }
+    Start-Sleep -Seconds 3
 }
 
 function Get-TeamMembers([string]$Org, [string]$TeamSlug) {
@@ -216,7 +199,6 @@ function Get-TeamMembers([string]$Org, [string]$TeamSlug) {
         Write-Warning "Cannot get members for a team with empty slug."
         return @()
     }
-    Write-Output "Getting members for team '${TeamSlug}' in organization '${Org}'..."
     $members = @()
     $page = 1
     try {
@@ -227,7 +209,6 @@ function Get-TeamMembers([string]$Org, [string]$TeamSlug) {
                 if ($outputJson -and $outputJson.Count -gt 0) {
                     $members += $outputJson
                     $page++
-                    Write-Output "Retrieved $($outputJson.Count) members for team '${TeamSlug}' (page $($page-1))."
                 } else {
                     break
                 }
@@ -235,12 +216,10 @@ function Get-TeamMembers([string]$Org, [string]$TeamSlug) {
                 break
             }
         } while ($true)
-    }
-    catch {
+    } catch {
         Write-Warning "Error retrieving members for team '${TeamSlug}': $_"
     }
     $validMembers = $members | Where-Object { -not [string]::IsNullOrWhiteSpace($_.login) }
-    Write-Output "Total valid members for team '${TeamSlug}': $($validMembers.Count)"
     return $validMembers
 }
 
@@ -253,7 +232,6 @@ function Add-TeamMember([string]$Org, [string]$TeamSlug, [string]$Username, [str
         Write-Output "Dry-run: Would add user '${Username}' to team '${TeamSlug}' with role '${Role}'."
         return
     }
-    Write-Output "Adding user '${Username}' to team '${TeamSlug}' with role '${Role}'..."
     try {
         gh api --method PUT "orgs/$Org/teams/$TeamSlug/memberships/$Username" --field role="$Role"
         if ($LASTEXITCODE -eq 0) {
@@ -281,7 +259,6 @@ function Get-UserMapping([string]$CsvPath) {
                 $possibleSourceColumns = $firstRow.PSObject.Properties.Name | Where-Object { $_ -like "*Source*" -or $_ -like "*From*" }
                 $possibleTargetColumns = $firstRow.PSObject.Properties.Name | Where-Object { $_ -like "*Target*" -or $_ -like "*To*" }
                 if ($possibleSourceColumns -and $possibleTargetColumns) {
-                    Write-Output "Using inferred column names: Source='$($possibleSourceColumns[0])', Target='$($possibleTargetColumns[0])'"
                     $newUserMap = @()
                     foreach ($row in $userMap) {
                         $newUserMap += [PSCustomObject]@{
@@ -311,181 +288,103 @@ if (-not (Test-Path $UserMappingCsv)) {
     exit 1
 }
 
-Write-Output "Authenticating with source organization..."
-GhAuth "SOURCE_PAT"
-Write-Output "Fetching teams from source organization '${SourceOrg}'..."
+# 1. Authenticate for source organization operations
+Switch-GHAuth $env:SOURCE_GH_APP_TOKEN "source organization"
+
+# 2. Get all teams from the source organization
 $sourceTeams = Get-Teams -Org $SourceOrg
 Write-Output "Found $($sourceTeams.Count) teams in source organization."
-Write-Output "Source Teams:"
-$sourceTeams | ForEach-Object { Write-Output "- $($_.name) (slug: $($_.slug))" }
 
-Write-Output "Authenticating with target organization..."
-GhAuth "TARGET_PAT"
-Write-Output "Checking existing teams in target organization..."
+# 3. Authenticate for target organization operations
+Switch-GHAuth $env:TARGET_GH_APP_TOKEN "target organization"
+
+# 4. Get current teams in target org
 $existingTargetTeams = Get-Teams -Org $TargetOrg
 Write-Output "Found $($existingTargetTeams.Count) existing teams in target organization."
-Write-Output "Existing Target Teams:"
-$existingTargetTeams | ForEach-Object { Write-Output "- $($_.name) (slug: $($_.slug))" }
 
 $processedTeams = @{}
 
-Write-Output "Creating parent teams in target organization..."
+# 5. Create all parent teams (teams without parent)
 foreach ($team in $sourceTeams | Where-Object { -not $_.parent }) {
-    if ([string]::IsNullOrWhiteSpace($team.name)) { Write-Warning "Skipping team with empty name."; continue }
-    Write-Output "Processing parent team: $($team.name)"
+    if ([string]::IsNullOrWhiteSpace($team.name)) { continue }
     $existingTeam = $existingTargetTeams | Where-Object { $_.name -eq $team.name }
     if ($existingTeam) {
-        Write-Output "Team '$($team.name)' already exists in target organization with slug '$($existingTeam.slug)'."
         $processedTeams[$team.name] = $existingTeam
     } else {
-        Write-Output "Creating team '$($team.name)' in target organization."
         $result = Create-Team -Org $TargetOrg -Name $team.name -Description $team.description -Privacy $team.privacy
         if ($result) {
-            Write-Output "Successfully created team '$($team.name)' with slug '$($result.slug)'."
             $processedTeams[$team.name] = $result
-        } else {
-            Write-Warning "Failed to create team '$($team.name)' in target organization."
         }
     }
 }
 
-Write-Output "Waiting for API propagation..."
 Start-Sleep -Seconds 5
 $targetTeams = Get-Teams -Org $TargetOrg
-Write-Output "After creating parent teams: $($targetTeams.Count) teams in target organization."
-Write-Output "Updated Target Teams:"
-$targetTeams | ForEach-Object { Write-Output "- $($_.name) (slug: $($_.slug))" }
 
-Write-Output "Creating child teams in target organization..."
+# 6. Create child teams
 foreach ($team in $sourceTeams | Where-Object { $_.parent }) {
-    if ([string]::IsNullOrWhiteSpace($team.name)) { Write-Warning "Skipping child team with empty name."; continue }
-    Write-Output "Processing child team: $($team.name)"
+    if ([string]::IsNullOrWhiteSpace($team.name)) { continue }
     $existingTeam = $targetTeams | Where-Object { $_.name -eq $team.name }
     if ($existingTeam) {
-        Write-Output "Team '$($team.name)' already exists in target organization with slug '$($existingTeam.slug)'."
         $processedTeams[$team.name] = $existingTeam
     } else {
         $parentTeamName = $team.parent.name
         if ([string]::IsNullOrWhiteSpace($parentTeamName)) {
-            Write-Warning "Child team '$($team.name)' has a parent with empty name. Creating without parent."
             $result = Create-Team -Org $TargetOrg -Name $team.name -Description $team.description -Privacy $team.privacy
         } else {
             $parentTeam = $targetTeams | Where-Object { $_.name -eq $parentTeamName }
             if ($parentTeam) {
-                Write-Output "Creating child team '$($team.name)' under parent '${parentTeamName}' in target organization."
                 $result = Create-Team -Org $TargetOrg -Name $team.name -Description $team.description -Privacy $team.privacy -ParentTeamSlug $parentTeam.slug
             } else {
-                Write-Output "Parent team '${parentTeamName}' not found in target organization. Creating '$($team.name)' without parent."
                 $result = Create-Team -Org $TargetOrg -Name $team.name -Description $team.description -Privacy $team.privacy
             }
         }
         if ($result) {
-            Write-Output "Successfully created child team '$($team.name)' with slug '$($result.slug)'."
             $processedTeams[$team.name] = $result
-        } else {
-            Write-Warning "Failed to create child team '$($team.name)' in target organization."
         }
     }
 }
 
-Write-Output "Waiting for API propagation..."
 Start-Sleep -Seconds 5
 $finalTargetTeams = Get-Teams -Org $TargetOrg
-Write-Output "Final count after creating all teams: $($finalTargetTeams.Count) teams in target organization."
-Write-Output "Teams in target organization:"
-$finalTargetTeams | ForEach-Object { Write-Output "- $($_.name) (slug: $($_.slug))" }
 
-# ======== Optimized Permission Setting Section ========
-
-Write-Output "Setting repository permissions for teams..."
+# 7. Set repository permissions
 $targetRepos = Get-Repos -Org $TargetOrg
-
-# Build a hashtable for fast repo lookup (only valid names)
-$targetReposMap = @{}
-foreach ($repo in $targetRepos | Where-Object { -not [string]::IsNullOrWhiteSpace($_.name) }) {
-    $targetReposMap[$repo.name] = $repo
-}
-
-$sourceTeamsWithSlugs = $sourceTeams | Where-Object { -not [string]::IsNullOrWhiteSpace($_.name) -and -not [string]::IsNullOrWhiteSpace($_.slug) }
-$teamTotal = $sourceTeamsWithSlugs.Count
-$teamIndex = 1
-foreach ($sourceTeam in $sourceTeamsWithSlugs) {
+foreach ($sourceTeam in $sourceTeams) {
+    if ([string]::IsNullOrWhiteSpace($sourceTeam.name) -or [string]::IsNullOrWhiteSpace($sourceTeam.slug)) { continue }
     $targetTeam = $finalTargetTeams | Where-Object { $_.name -eq $sourceTeam.name }
     if ($targetTeam) {
+        Switch-GHAuth $env:SOURCE_GH_APP_TOKEN "source organization"
         $teamRepos = Get-TeamRepos -Org $SourceOrg -TeamSlug $sourceTeam.slug
-        $teamReposWithNames = $teamRepos | Where-Object { -not [string]::IsNullOrWhiteSpace($_.name) }
-        $repoTotal = $teamReposWithNames.Count
-        $repoIndex = 1
-        foreach ($repo in $teamReposWithNames) {
-            $targetRepo = $targetReposMap[$repo.name]
+        Switch-GHAuth $env:TARGET_GH_APP_TOKEN "target organization"
+        foreach ($repo in $teamRepos) {
+            if ([string]::IsNullOrWhiteSpace($repo.name)) { continue }
+            $targetRepo = $targetRepos | Where-Object { $_.name -eq $repo.name }
             if ($targetRepo) {
                 $permission = if ($repo.role_name) { $repo.role_name } else { "pull" }
-                Write-Output "[$teamIndex/$teamTotal][$repoIndex/$repoTotal] $(Get-Date -Format o): Setting permission '${permission}' for team '$($targetTeam.name)' (slug: $($targetTeam.slug)) on repository '$($targetRepo.name)'."
-                
-                # Robust Retry and Delay Logic
-                $maxAttempts = 5
-                $attempt = 1
-                $success = $false
-                while (-not $success -and $attempt -le $maxAttempts) {
-                    try {
-                        gh api --method PUT "orgs/$TargetOrg/teams/$($targetTeam.slug)/repos/$TargetOrg/$($targetRepo.name)" --field permission="$permission"
-                        if ($LASTEXITCODE -eq 0) {
-                            Write-Output "Successfully set permission '${permission}' for team '$($targetTeam.name)' on repository '$($targetRepo.name)'."
-                            $success = $true
-                        } else {
-                            Write-Warning "$(Get-Date -Format o): Attempt $attempt failed (exit code $LASTEXITCODE) for team '$($targetTeam.name)' on repo '$($targetRepo.name)'. Sleeping 60 seconds and retrying..."
-                            Start-Sleep -Seconds 60
-                            $attempt++
-                        }
-                    } catch {
-                        Write-Warning "$(Get-Date -Format o): Exception during permission setting attempt $attempt for team '$($targetTeam.name)' on repo '$($targetRepo.name)': $_"
-                        Start-Sleep -Seconds 60
-                        $attempt++
-                    }
-                }
-                if (-not $success) {
-                    Write-Warning "$(Get-Date -Format o): Giving up on setting permission '${permission}' for team '$($targetTeam.name)' on repo '$($targetRepo.name)' after $maxAttempts attempts."
-                }
-                
-                # Always sleep between calls to avoid API throttling
-                Start-Sleep -Seconds 3
-            } else {
-                Write-Output "Repository '$($repo.name)' not found in target organization. Skipping."
+                Set-TeamRepoPermission -Org $TargetOrg -TeamSlug $targetTeam.slug -RepoName $targetRepo.name -Permission $permission
             }
-            $repoIndex++
         }
     }
-    $teamIndex++
 }
 
-# ========== End Optimized Permission Setting Section ==========
-
-Write-Output "Adding team members using user mapping from ${UserMappingCsv}..."
-try {
-    $userMapping = Get-UserMapping -CsvPath $UserMappingCsv
-    Write-Output "Loaded user mapping with $($userMapping.Count) entries."
-} catch {
-    Write-Warning "Failed to load user mapping: $_"
-    $userMapping = @()
-}
-
-foreach ($sourceTeam in $sourceTeams | Where-Object { -not [string]::IsNullOrWhiteSpace($_.name) -and -not [string]::IsNullOrWhiteSpace($_.slug) }) {
+# 8. Add team members using the user mapping
+$userMapping = Get-UserMapping -CsvPath $UserMappingCsv
+foreach ($sourceTeam in $sourceTeams) {
+    if ([string]::IsNullOrWhiteSpace($sourceTeam.name) -or [string]::IsNullOrWhiteSpace($sourceTeam.slug)) { continue }
     $targetTeam = $finalTargetTeams | Where-Object { $_.name -eq $sourceTeam.name }
     if ($targetTeam) {
-        Write-Output "Processing members for team: $($targetTeam.name)"
+        Switch-GHAuth $env:SOURCE_GH_APP_TOKEN "source organization"
         $teamMembers = Get-TeamMembers -Org $SourceOrg -TeamSlug $sourceTeam.slug
-        foreach ($member in $teamMembers | Where-Object { -not [string]::IsNullOrWhiteSpace($_.login) }) {
+        Switch-GHAuth $env:TARGET_GH_APP_TOKEN "target organization"
+        foreach ($member in $teamMembers) {
+            if ([string]::IsNullOrWhiteSpace($member.login)) { continue }
             $mappedUser = $userMapping | Where-Object { $_.SourceUsername -eq $member.login }
             if ($mappedUser -and -not [string]::IsNullOrWhiteSpace($mappedUser.TargetUsername)) {
                 $targetUsername = $mappedUser.TargetUsername
-                Write-Output "Adding user '${targetUsername}' to team '$($targetTeam.name)'."
                 Add-TeamMember -Org $TargetOrg -TeamSlug $targetTeam.slug -Username $targetUsername -Role ($member.role ?? "member")
-            } else {
-                Write-Warning "No mapping found for user '$($member.login)' in team '$($sourceTeam.name)'."
             }
         }
-    } else {
-        Write-Warning "Team '$($sourceTeam.name)' not found in target organization for member assignment."
     }
 }
 
