@@ -223,29 +223,38 @@ function Get-Repos([string]$Org) {
 }
 
 function Set-TeamRepoPermission([string]$Org, [string]$TeamSlug, [string]$RepoName, [string]$Permission) {
-    # Validate parameters
     if ([string]::IsNullOrWhiteSpace($TeamSlug) -or [string]::IsNullOrWhiteSpace($RepoName) -or [string]::IsNullOrWhiteSpace($Permission)) {
         Write-Warning "Cannot set permission with empty values: TeamSlug='${TeamSlug}', RepoName='${RepoName}', Permission='${Permission}'."
         return
     }
-
     if ($DryRun) {
         Write-Output "Dry-run: Would set permission '${Permission}' for team '${TeamSlug}' on repository '${RepoName}'."
         return
     }
-
-    Write-Output "Setting permission '${Permission}' for team '${TeamSlug}' on repository '${RepoName}'..."
-    
-    try {
-        gh api --method PUT "orgs/$Org/teams/$TeamSlug/repos/$Org/$RepoName" --field permission="$Permission"
-        if ($LASTEXITCODE -eq 0) {
-            Write-Output "Successfully set permission '${Permission}' for team '${TeamSlug}' on repository '${RepoName}'."
-        } else {
-            Write-Warning "Failed to set permission '${Permission}' for team '${TeamSlug}' on repository '${RepoName}'."
+    $maxAttempts = 5
+    $success = $false
+    $attempt = 1
+    while (-not $success -and $attempt -le $maxAttempts) {
+        try {
+            gh api --method PUT "orgs/$Org/teams/$TeamSlug/repos/$Org/$RepoName" --field permission="$Permission"
+            if ($LASTEXITCODE -eq 0) {
+                Write-Output "Successfully set permission '${Permission}' for team '${TeamSlug}' on repository '${RepoName}'."
+                $success = $true
+            } else {
+                Write-Warning "Attempt ${attempt}: Failed to set permission '${Permission}' for team '${TeamSlug}' on repository '${RepoName}'. Retrying in 60s."
+                Start-Sleep -Seconds 60
+                $attempt++
+            }
+        } catch {
+            Write-Warning "Attempt ${attempt}: Error setting permission '${Permission}' for team '${TeamSlug}' on repository '${RepoName}': $_. Retrying in 60s."
+            Start-Sleep -Seconds 60
+            $attempt++
         }
-    } catch {
-        Write-Warning "Error setting permission '${Permission}' for team '${TeamSlug}' on repository '${RepoName}': $_"
     }
+    if (-not $success) {
+        Write-Warning "Giving up on setting permission '${Permission}' for team '${TeamSlug}' on repository '${RepoName}' after $maxAttempts attempts."
+    }
+    Start-Sleep -Seconds 3
 }
 
 function Get-TeamMembers([string]$Org, [string]$TeamSlug) {
