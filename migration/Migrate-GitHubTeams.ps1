@@ -421,11 +421,23 @@ foreach ($sourceTeam in $sourceTeamsWithSlugs) {
             if ($targetRepo) {
                 $permission = if ($repo.role_name) { $repo.role_name } else { "pull" }
                 Write-Output "[$teamIndex/$teamTotal][$repoIndex/$repoTotal] Setting permission '${permission}' for team '$($targetTeam.name)' (slug: $($targetTeam.slug)) on repository '$($targetRepo.name)'."
-                Set-TeamRepoPermission -Org $TargetOrg -TeamSlug $targetTeam.slug -RepoName $targetRepo.name -Permission $permission
-            } else {
+                $success = $false
+                $retries = 0
+                while (-not $success -and $retries -lt 5) {
+                    Set-TeamRepoPermission -Org $TargetOrg -TeamSlug $targetTeam.slug -RepoName $targetRepo.name -Permission $permission
+                    if ($LASTEXITCODE -eq 0) {
+                        $success = $true
+                    } else {
+                        Write-Warning "Failed to set permission. Possible rate limit. Sleeping for 60 seconds and retrying..."
+                        Start-Sleep -Seconds 60
+                        $retries++
+                    }
+                 }
+                 Start-Sleep -Seconds 2  # Always sleep between calls
+             } else {
                 Write-Output "Repository '$($repo.name)' not found in target organization. Skipping."
-            }
-            $repoIndex++
+             }
+             $repoIndex++
         }
     }
     $teamIndex++
