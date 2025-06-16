@@ -402,7 +402,9 @@ $targetRepos = Get-Repos -Org $TargetOrg
 
 # Build a hashtable for fast repo lookup
 $targetReposMap = @{}
-foreach ($repo in $targetRepos) { $targetReposMap[$repo.name] = $repo }
+foreach ($repo in $targetRepos | Where-Object { -not [string]::IsNullOrWhiteSpace($_.name) }) {
+    $targetReposMap[$repo.name] = $repo
+}
 
 $sourceTeamsWithSlugs = $sourceTeams | Where-Object { -not [string]::IsNullOrWhiteSpace($_.name) -and -not [string]::IsNullOrWhiteSpace($_.slug) }
 $teamTotal = $sourceTeamsWithSlugs.Count
