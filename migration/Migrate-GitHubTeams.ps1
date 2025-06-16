@@ -400,7 +400,7 @@ $finalTargetTeams | ForEach-Object { Write-Output "- $($_.name) (slug: $($_.slug
 Write-Output "Setting repository permissions for teams..."
 $targetRepos = Get-Repos -Org $TargetOrg
 
-# Build a hashtable for fast repo lookup
+# Build a hashtable for fast repo lookup (only valid names)
 $targetReposMap = @{}
 foreach ($repo in $targetRepos | Where-Object { -not [string]::IsNullOrWhiteSpace($_.name) }) {
     $targetReposMap[$repo.name] = $repo
@@ -420,24 +420,39 @@ foreach ($sourceTeam in $sourceTeamsWithSlugs) {
             $targetRepo = $targetReposMap[$repo.name]
             if ($targetRepo) {
                 $permission = if ($repo.role_name) { $repo.role_name } else { "pull" }
-                Write-Output "[$teamIndex/$teamTotal][$repoIndex/$repoTotal] Setting permission '${permission}' for team '$($targetTeam.name)' (slug: $($targetTeam.slug)) on repository '$($targetRepo.name)'."
+                Write-Output "[$teamIndex/$teamTotal][$repoIndex/$repoTotal] $(Get-Date -Format o): Setting permission '${permission}' for team '$($targetTeam.name)' (slug: $($targetTeam.slug)) on repository '$($targetRepo.name)'."
+                
+                # Robust Retry and Delay Logic
+                $maxAttempts = 5
+                $attempt = 1
                 $success = $false
-                $retries = 0
-                while (-not $success -and $retries -lt 5) {
-                    Set-TeamRepoPermission -Org $TargetOrg -TeamSlug $targetTeam.slug -RepoName $targetRepo.name -Permission $permission
-                    if ($LASTEXITCODE -eq 0) {
-                        $success = $true
-                    } else {
-                        Write-Warning "Failed to set permission. Possible rate limit. Sleeping for 60 seconds and retrying..."
+                while (-not $success -and $attempt -le $maxAttempts) {
+                    try {
+                        gh api --method PUT "orgs/$TargetOrg/teams/$($targetTeam.slug)/repos/$TargetOrg/$($targetRepo.name)" --field permission="$permission"
+                        if ($LASTEXITCODE -eq 0) {
+                            Write-Output "Successfully set permission '${permission}' for team '$($targetTeam.name)' on repository '$($targetRepo.name)'."
+                            $success = $true
+                        } else {
+                            Write-Warning "$(Get-Date -Format o): Attempt $attempt failed (exit code $LASTEXITCODE) for team '$($targetTeam.name)' on repo '$($targetRepo.name)'. Sleeping 60 seconds and retrying..."
+                            Start-Sleep -Seconds 60
+                            $attempt++
+                        }
+                    } catch {
+                        Write-Warning "$(Get-Date -Format o): Exception during permission setting attempt $attempt for team '$($targetTeam.name)' on repo '$($targetRepo.name)': $_"
                         Start-Sleep -Seconds 60
-                        $retries++
+                        $attempt++
                     }
-                 }
-                 Start-Sleep -Seconds 2  # Always sleep between calls
-             } else {
+                }
+                if (-not $success) {
+                    Write-Warning "$(Get-Date -Format o): Giving up on setting permission '${permission}' for team '$($targetTeam.name)' on repo '$($targetRepo.name)' after $maxAttempts attempts."
+                }
+                
+                # Always sleep between calls to avoid API throttling
+                Start-Sleep -Seconds 3
+            } else {
                 Write-Output "Repository '$($repo.name)' not found in target organization. Skipping."
-             }
-             $repoIndex++
+            }
+            $repoIndex++
         }
     }
     $teamIndex++
