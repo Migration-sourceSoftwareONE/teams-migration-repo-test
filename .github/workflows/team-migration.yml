@@ -33,14 +33,13 @@ jobs:
         run: |
           sudo apt-get install -y powershell
 
-      - name: Generate GitHub App Token for Source Org
-        id: source_token
-        uses: tibdex/github-app-token@v2
-        with:
-          app_id: ${{ secrets.GH_APP_ID }}
-          private_key: ${{ secrets.GH_APP_PRIVATE_KEY }}
-          installation_retrieval_mode: organization
-          installation_retrieval_payload: ${{ github.event.inputs.source_org }}
+      # If you want to use classic PATs for initial operations, add them as secrets and export them here
+      - name: Export PATs for script use
+        env:
+          SOURCE_PAT: ${{ secrets.SOURCE_PAT }}
+          TARGET_PAT: ${{ secrets.TARGET_PAT }}
+        run: |
+          echo "SOURCE_PAT and TARGET_PAT exported if available"
 
       - name: Generate GitHub App Token for Target Org
         id: target_token
@@ -53,10 +52,11 @@ jobs:
 
       - name: Run Team Migration Script
         env:
-          SOURCE_GH_APP_TOKEN: ${{ steps.source_token.outputs.token }}
-          TARGET_GH_APP_TOKEN: ${{ steps.target_token.outputs.token }}
+          SOURCE_PAT: ${{ secrets.SOURCE_PAT }}
+          TARGET_PAT: ${{ secrets.TARGET_PAT }}
+          GITHUB_APP_TOKEN: ${{ steps.target_token.outputs.token }}
         run: |
-           pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File migration/Migrate-GitHubTeams.ps1 \
+          pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File migration/Migrate-GitHubTeams.ps1 \
             -SourceOrg "${{ github.event.inputs.source_org }}" \
             -TargetOrg "${{ github.event.inputs.target_org }}" \
             -UserMappingCsv "${{ github.event.inputs.user_mapping_csv }}" \
