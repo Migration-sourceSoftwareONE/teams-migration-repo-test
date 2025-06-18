@@ -538,7 +538,7 @@ foreach ($sourceTeam in $sourceTeams) {
     }
 }
 
-# 5. Add team members using the user mapping
+# 5. Add team members using user mapping (by email, mapping target usernames dynamically)
 Write-Output "Adding team members using user mapping from ${UserMappingCsv}..."
 try {
     $userMapping = Get-UserMapping -CsvPath $UserMappingCsv
@@ -548,40 +548,104 @@ try {
     $userMapping = @()
 }
 
+# Helper: Find target username by email in the target org
+function Find-TargetUsernameByEmail {
+    param (
+        [string]$Email,
+        [array]$TargetOrgMembersCache
+    )
+    # The cache is a list of user objects with .login and .email properties
+    $foundUser = $TargetOrgMembersCache | Where-Object { $_.email -eq $Email }
+    if ($foundUser) {
+        return $foundUser.login
+    } else {
+        return $null
+    }
+}
+
+# Build a cache of all target org members and their emails (may require admin:org access)
+Write-Output "Fetching all members of the target organization for email-based mapping..."
+$targetOrgMembers = @()
+$page = 1
+do {
+    $targetMembersPage = gh api "orgs/$TargetOrg/members?per_page=100&page=$page" --jq '.' 2>$null
+    if ($targetMembersPage) {
+        $targetMembersJson = $targetMembersPage | ConvertFrom-Json
+        if ($targetMembersJson.Count -gt 0) {
+            $targetOrgMembers += $targetMembersJson
+            $page++
+        } else {
+            break
+        }
+    } else {
+        break
+    }
+} while ($true)
+
+# For each member, get their public email (if available)
+foreach ($member in $targetOrgMembers) {
+    $userInfo = gh api "users/$($member.login)" --jq '.' 2>$null | ConvertFrom-Json
+    $member | Add-Member -NotePropertyName email -NotePropertyValue $userInfo.email
+}
+
+# Track unmapped users for report
+$unmappedUsers = @()
+
 foreach ($sourceTeam in $sourceTeams) {
-    # Skip teams with empty names
     if ([string]::IsNullOrWhiteSpace($sourceTeam.name) -or [string]::IsNullOrWhiteSpace($sourceTeam.slug)) {
         Write-Warning "Skipping team with empty name or slug when adding members."
         continue
     }
-    
+
     $targetTeam = $finalTargetTeams | Where-Object { $_.name -eq $sourceTeam.name }
-    
+
     if ($targetTeam) {
         Write-Output "Processing members for team: $($targetTeam.name)"
         $teamMembers = Get-TeamMembers -Org $SourceOrg -TeamSlug $sourceTeam.slug
-        
+
         foreach ($member in $teamMembers) {
-            # Skip members with empty logins
             if ([string]::IsNullOrWhiteSpace($member.login)) {
                 Write-Warning "Skipping member with empty login for team '$($targetTeam.name)'."
                 continue
             }
-            
-            # Find the mapped username for this user
-            $mappedUser = $userMapping | Where-Object { $_.SourceUsername -eq $member.login }
-            
-            if ($mappedUser -and -not [string]::IsNullOrWhiteSpace($mappedUser.TargetUsername)) {
-                $targetUsername = $mappedUser.TargetUsername
-                Write-Output "Adding user '${targetUsername}' to team '$($targetTeam.name)'."
-                Add-TeamMember -Org $TargetOrg -TeamSlug $targetTeam.slug -Username $targetUsername -Role ($member.role ?? "member")
+
+            # Find the user's email from the userMapping CSV
+            $mapping = $userMapping | Where-Object { $_.SourceUsername -eq $member.login }
+            if ($mapping -and $mapping.UserEmail) {
+                $userEmail = $mapping.UserEmail
+                $targetUsername = Find-TargetUsernameByEmail -Email $userEmail -TargetOrgMembersCache $targetOrgMembers
+                if ($targetUsername) {
+                    Write-Output "Adding user '${targetUsername}' (matched by email ${userEmail}) to team '$($targetTeam.name)'."
+                    Add-TeamMember -Org $TargetOrg -TeamSlug $targetTeam.slug -Username $targetUsername -Role ($member.role ?? "member")
+                } else {
+                    Write-Warning "No target org user found with email '${userEmail}' for source user '$($member.login)' in team '$($sourceTeam.name)'."
+                    $unmappedUsers += [PSCustomObject]@{
+                        SourceTeam   = $sourceTeam.name
+                        SourceUser   = $member.login
+                        UserEmail    = $userEmail
+                    }
+                }
             } else {
-                Write-Warning "No mapping found for user '$($member.login)' in team '$($sourceTeam.name)'."
+                Write-Warning "No email mapping found for source user '$($member.login)' in team '$($sourceTeam.name)'."
+                $unmappedUsers += [PSCustomObject]@{
+                    SourceTeam   = $sourceTeam.name
+                    SourceUser   = $member.login
+                    UserEmail    = ""
+                }
             }
         }
     } else {
         Write-Warning "Team '$($sourceTeam.name)' not found in target organization for member assignment."
     }
+}
+
+# Output unmapped users report as CSV
+if ($unmappedUsers.Count -gt 0) {
+    $unmappedPath = "unmapped_team_members.csv"
+    $unmappedUsers | Export-Csv -Path $unmappedPath -NoTypeInformation
+    Write-Warning "Some users could not be mapped. See report: $unmappedPath"
+} else {
+    Write-Output "All users were mapped and added to teams successfully."
 }
 
 Write-Output "GitHub Teams migration completed."
