@@ -311,42 +311,36 @@ function Get-UserMapping([string]$CsvPath) {
         Write-Error "User mapping CSV file not found at path: ${CsvPath}"
         exit 1
     }
-    
     try {
         $userMap = Import-Csv -Path $CsvPath
-        
         if ($userMap.Count -gt 0) {
             $firstRow = $userMap[0]
             if (-not ($firstRow.PSObject.Properties.Name -contains "SourceUsername") -or 
-                -not ($firstRow.PSObject.Properties.Name -contains "TargetUsername")) {
-                Write-Warning "User mapping CSV does not contain required columns 'SourceUsername' and/or 'TargetUsername'."
+                -not ($firstRow.PSObject.Properties.Name -contains "UserEmail")) {
+                Write-Warning "User mapping CSV does not contain required columns 'SourceUsername' and/or 'UserEmail'."
                 Write-Warning "Available columns: $($firstRow.PSObject.Properties.Name -join ', ')"
-                
-                $possibleSourceColumns = $firstRow.PSObject.Properties.Name | Where-Object { $_ -like "*Source*" -or $_ -like "*From*" }
-                $possibleTargetColumns = $firstRow.PSObject.Properties.Name | Where-Object { $_ -like "*Target*" -or $_ -like "*To*" }
-                
-                if ($possibleSourceColumns -and $possibleTargetColumns) {
-                    Write-Output "Using inferred column names: Source='$($possibleSourceColumns[0])', Target='$($possibleTargetColumns[0])'"
-                    
-                    $newUserMap = @()
-                    foreach ($row in $userMap) {
-                        $newUserMap += [PSCustomObject]@{
-                            SourceUsername = $row.$($possibleSourceColumns[0])
-                            TargetUsername = $row.$($possibleTargetColumns[0])
-                        }
-                    }
-                    return $newUserMap
-                } else {
-                    Write-Error "Cannot determine source and target username columns in the CSV. Please rename columns to 'SourceUsername' and 'TargetUsername'."
-                    exit 1
-                }
+                Write-Error "Cannot determine source username and user email columns in the CSV. Please rename columns to 'SourceUsername' and 'UserEmail'."
+                exit 1
             }
         }
-        
         return $userMap
     } catch {
         Write-Error "Failed to read user mapping CSV: $_"
         exit 1
+    }
+}
+
+# Helper: Find target username by email in the target org
+function Find-TargetUsernameByEmail {
+    param (
+        [string]$Email,
+        [array]$TargetOrgMembersCache
+    )
+    $foundUser = $TargetOrgMembersCache | Where-Object { $_.email -eq $Email }
+    if ($foundUser) {
+        return $foundUser.login
+    } else {
+        return $null
     }
 }
 
@@ -470,7 +464,32 @@ foreach ($sourceTeam in $sourceTeams) {
     }
 }
 
-# 8. Add team members using the user mapping (GitHub App token)
+# 8. Add team members using the user mapping (GitHub App token, map by email)
+# Build a cache of all target org members and their emails (may require org admin access)
+Write-Output "Fetching all members of the target organization for email-based mapping..."
+$targetOrgMembers = @()
+$page = 1
+do {
+    $targetMembersPage = gh api "orgs/$TargetOrg/members?per_page=100&page=$page" --jq '.' 2>$null
+    if ($targetMembersPage) {
+        $targetMembersJson = $targetMembersPage | ConvertFrom-Json
+        if ($targetMembersJson.Count -gt 0) {
+            $targetOrgMembers += $targetMembersJson
+            $page++
+        } else {
+            break
+        }
+    } else {
+        break
+    }
+} while ($true)
+
+# For each member, get their public email (if available)
+foreach ($member in $targetOrgMembers) {
+    $userInfo = gh api "users/$($member.login)" --jq '.' 2>$null | ConvertFrom-Json
+    $member | Add-Member -NotePropertyName email -NotePropertyValue $userInfo.email
+}
+
 Write-Output "Adding team members using user mapping from ${UserMappingCsv}..."
 try {
     $userMapping = Get-UserMapping -CsvPath $UserMappingCsv
@@ -479,6 +498,8 @@ try {
     Write-Warning "Failed to load user mapping: $_"
     $userMapping = @()
 }
+
+$unmappedUsers = @()
 
 foreach ($sourceTeam in $sourceTeams) {
     if ([string]::IsNullOrWhiteSpace($sourceTeam.name) -or [string]::IsNullOrWhiteSpace($sourceTeam.slug)) {
@@ -496,18 +517,43 @@ foreach ($sourceTeam in $sourceTeams) {
                 Write-Warning "Skipping member with empty login for team '$($targetTeam.name)'."
                 continue
             }
-            $mappedUser = $userMapping | Where-Object { $_.SourceUsername -eq $member.login }
-            if ($mappedUser -and -not [string]::IsNullOrWhiteSpace($mappedUser.TargetUsername)) {
-                $targetUsername = $mappedUser.TargetUsername
-                Write-Output "Adding user '${targetUsername}' to team '$($targetTeam.name)'."
-                Add-TeamMember -Org $TargetOrg -TeamSlug $targetTeam.slug -Username $targetUsername -Role ($member.role ?? "member")
+            # Find the user's email from the userMapping CSV
+            $mapping = $userMapping | Where-Object { $_.SourceUsername -eq $member.login }
+            if ($mapping -and $mapping.UserEmail) {
+                $userEmail = $mapping.UserEmail
+                $targetUsername = Find-TargetUsernameByEmail -Email $userEmail -TargetOrgMembersCache $targetOrgMembers
+                if ($targetUsername) {
+                    Write-Output "Adding user '${targetUsername}' (matched by email ${userEmail}) to team '$($targetTeam.name)'."
+                    Add-TeamMember -Org $TargetOrg -TeamSlug $targetTeam.slug -Username $targetUsername -Role ($member.role ?? "member")
+                } else {
+                    Write-Warning "No target org user found with email '${userEmail}' for source user '$($member.login)' in team '$($sourceTeam.name)'."
+                    $unmappedUsers += [PSCustomObject]@{
+                        SourceTeam   = $sourceTeam.name
+                        SourceUser   = $member.login
+                        UserEmail    = $userEmail
+                    }
+                }
             } else {
-                Write-Warning "No mapping found for user '$($member.login)' in team '$($sourceTeam.name)'."
+                Write-Warning "No email mapping found for source user '$($member.login)' in team '$($sourceTeam.name)'."
+                $unmappedUsers += [PSCustomObject]@{
+                    SourceTeam   = $sourceTeam.name
+                    SourceUser   = $member.login
+                    UserEmail    = ""
+                }
             }
         }
     } else {
         Write-Warning "Team '$($sourceTeam.name)' not found in target organization for member assignment."
     }
+}
+
+# Output unmapped users report as CSV
+if ($unmappedUsers.Count -gt 0) {
+    $unmappedPath = "unmapped_team_members.csv"
+    $unmappedUsers | Export-Csv -Path $unmappedPath -NoTypeInformation
+    Write-Warning "Some users could not be mapped. See report: $unmappedPath"
+} else {
+    Write-Output "All users were mapped and added to teams successfully."
 }
 
 Write-Output "GitHub Teams migration completed."
