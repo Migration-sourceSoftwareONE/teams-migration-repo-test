@@ -61,3 +61,10 @@ jobs:
             -TargetOrg "${{ github.event.inputs.target_org }}" \
             -UserMappingCsv "${{ github.event.inputs.user_mapping_csv }}" \
             $([ "${{ github.event.inputs.dry_run }}" == 'true' ] && echo "-DryRun")
+
+      - name: Upload unmapped user report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unmapped_team_members_report
+          path: unmapped_team_members.csv
