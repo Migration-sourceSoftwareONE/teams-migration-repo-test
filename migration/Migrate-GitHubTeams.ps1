@@ -11,9 +11,7 @@ function GhAuth([string]$EnvVarName) {
         Write-Error "Environment variable ${EnvVarName} is not set or empty."
         exit 1
     }
-
     $env:GH_TOKEN = $Token
-
     $authResult = gh auth status 2>$null
     if ($LASTEXITCODE -ne 0) {
         Write-Error "GitHub CLI authentication failed using ${EnvVarName}."
@@ -47,13 +45,11 @@ function Get-Teams([string]$Org) {
             break
         }
     } while ($true)
-    
+
     $validTeams = $teams | Where-Object { -not [string]::IsNullOrWhiteSpace($_.name) }
-    
     if ($teams.Count -ne $validTeams.Count) {
         Write-Warning "Filtered out $($teams.Count - $validTeams.Count) teams with empty names."
     }
-    
     Write-Output "Total valid teams found in ${Org}: $($validTeams.Count)"
     return $validTeams
 }
@@ -63,7 +59,6 @@ function Get-TeamByName([string]$Org, [string]$Name) {
         Write-Warning "Cannot lookup team with empty name in organization ${Org}."
         return $null
     }
-    
     Write-Output "Looking for team with name '${Name}' in organization ${Org}..."
     $teams = Get-Teams -Org $Org
     $matchingTeam = $teams | Where-Object { $_.name -eq $Name }
@@ -81,30 +76,25 @@ function Create-Team([string]$Org, [string]$Name, [string]$Description, [string]
         Write-Warning "Cannot create a team with an empty name in organization '${Org}'."
         return $null
     }
-
     if ($DryRun) {
         Write-Output "Dry-run: Would create team '${Name}' in organization '${Org}'."
         return
     }
-
     Write-Output "Creating team '${Name}' in organization '${Org}'..."
-    
     if ([string]::IsNullOrWhiteSpace($Privacy)) {
         $Privacy = "closed"
         Write-Output "Using default privacy setting: closed"
     }
-    
     if ([string]::IsNullOrWhiteSpace($Description)) {
         $Description = "Team $Name"
     }
-    
     try {
         $jsonBody = @{
             name = $Name
             description = $Description
             privacy = $Privacy.ToLower()
         } | ConvertTo-Json -Compress
-        
+
         if (-not [string]::IsNullOrWhiteSpace($ParentTeamSlug)) {
             $parentTeam = gh api "orgs/$Org/teams/$ParentTeamSlug" --jq '.' 2>$null | ConvertFrom-Json
             if ($parentTeam -and $parentTeam.id) {
@@ -116,15 +106,12 @@ function Create-Team([string]$Org, [string]$Name, [string]$Description, [string]
                 Write-Warning "Parent team '${ParentTeamSlug}' not found. Creating '${Name}' without parent."
             }
         }
-        
+
         Write-Output "Team creation request body: $jsonBody"
-        
         $tempFile = New-TemporaryFile
         Set-Content -Path $tempFile.FullName -Value $jsonBody
-        
         $response = gh api --method POST "orgs/$Org/teams" --input $tempFile.FullName
         Remove-Item -Path $tempFile.FullName
-        
         Start-Sleep -Seconds 2
         $createdTeam = Get-TeamByName -Org $Org -Name $Name
         if ($createdTeam) {
@@ -147,11 +134,9 @@ function Get-TeamRepos([string]$Org, [string]$TeamSlug) {
         Write-Warning "Cannot get repositories for a team with empty slug."
         return @()
     }
-    
     Write-Output "Getting repositories for team '${TeamSlug}' in organization '${Org}'..."
     $repos = @()
     $page = 1
-    
     try {
         do {
             $output = gh api "orgs/$Org/teams/$TeamSlug/repos?per_page=100&page=$page" --jq '.' 2>$null
@@ -172,7 +157,6 @@ function Get-TeamRepos([string]$Org, [string]$TeamSlug) {
     catch {
         Write-Warning "Error retrieving repositories for team '${TeamSlug}': $_"
     }
-    
     Write-Output "Total repositories for team '${TeamSlug}': $($repos.Count)"
     return $repos
 }
@@ -181,7 +165,6 @@ function Get-Repos([string]$Org) {
     Write-Output "Getting all repositories in organization '${Org}'..."
     $repos = @()
     $page = 1
-    
     try {
         do {
             $output = gh api "orgs/$Org/repos?per_page=100&page=$page" --jq '.' 2>$null
@@ -202,9 +185,7 @@ function Get-Repos([string]$Org) {
     catch {
         Write-Warning "Error retrieving repositories for organization '${Org}': $_"
     }
-    
     $validRepos = $repos | Where-Object { -not [string]::IsNullOrWhiteSpace($_.name) }
-    
     Write-Output "Total valid repositories for organization '${Org}': $($validRepos.Count)"
     return $validRepos
 }
@@ -249,11 +230,9 @@ function Get-TeamMembers([string]$Org, [string]$TeamSlug) {
         Write-Warning "Cannot get members for a team with empty slug."
         return @()
     }
-    
     Write-Output "Getting members for team '${TeamSlug}' in organization '${Org}'..."
     $members = @()
     $page = 1
-    
     try {
         do {
             $output = gh api "orgs/$Org/teams/$TeamSlug/members?per_page=100&page=$page" --jq '.' 2>$null
@@ -274,9 +253,7 @@ function Get-TeamMembers([string]$Org, [string]$TeamSlug) {
     catch {
         Write-Warning "Error retrieving members for team '${TeamSlug}': $_"
     }
-    
     $validMembers = $members | Where-Object { -not [string]::IsNullOrWhiteSpace($_.login) }
-    
     Write-Output "Total valid members for team '${TeamSlug}': $($validMembers.Count)"
     return $validMembers
 }
@@ -286,14 +263,11 @@ function Add-TeamMember([string]$Org, [string]$TeamSlug, [string]$Username, [str
         Write-Warning "Cannot add member with empty values: TeamSlug='${TeamSlug}', Username='${Username}'."
         return
     }
-
     if ($DryRun) {
         Write-Output "Dry-run: Would add user '${Username}' to team '${TeamSlug}' with role '${Role}'."
         return
     }
-
     Write-Output "Adding user '${Username}' to team '${TeamSlug}' with role '${Role}'..."
-    
     try {
         gh api --method PUT "orgs/$Org/teams/$TeamSlug/memberships/$Username" --field role="$Role"
         if ($LASTEXITCODE -eq 0) {
@@ -330,7 +304,6 @@ function Get-UserMapping([string]$CsvPath) {
     }
 }
 
-# Helper: Find target username by email in the target org
 function Find-TargetUsernameByEmail {
     param (
         [string]$Email,
@@ -344,7 +317,61 @@ function Find-TargetUsernameByEmail {
     }
 }
 
-# Main execution starts here
+# RECURSIVE TEAM CREATION FOR NESTED TEAMS
+function Ensure-TeamCreatedRecursive {
+    param(
+        [string]$Org,
+        [object]$Team,                    # Team object from source
+        [hashtable]$AllTeamsByName,       # Name → Team object from source
+        [hashtable]$CreatedTeamsByName,   # Name → Team object in target
+        [object[]]$ExistingTargetTeams,   # Team objects already in target
+        [switch]$DryRun
+    )
+    if ($CreatedTeamsByName.ContainsKey($Team.name)) {
+        return $CreatedTeamsByName[$Team.name]
+    }
+    # First, ensure the parent is created (if any)
+    $parentSlug = $null
+    if ($Team.parent -and $Team.parent.name) {
+        $parentName = $Team.parent.name
+        # Ensure parent is created recursively
+        if (-not $CreatedTeamsByName.ContainsKey($parentName)) {
+            if ($AllTeamsByName.ContainsKey($parentName)) {
+                Ensure-TeamCreatedRecursive -Org $Org -Team $AllTeamsByName[$parentName] `
+                    -AllTeamsByName $AllTeamsByName `
+                    -CreatedTeamsByName $CreatedTeamsByName `
+                    -ExistingTargetTeams $ExistingTargetTeams `
+                    -DryRun:$DryRun
+            }
+        }
+        # Find parent slug in target
+        $parentInTarget = $ExistingTargetTeams | Where-Object { $_.name -eq $parentName }
+        if ($parentInTarget) {
+            $parentSlug = $parentInTarget.slug
+        } elseif ($CreatedTeamsByName.ContainsKey($parentName)) {
+            $parentSlug = $CreatedTeamsByName[$parentName].slug
+        }
+    }
+    # Now create this team (if not already exists)
+    $existing = $ExistingTargetTeams | Where-Object { $_.name -eq $Team.name }
+    if ($existing) {
+        $CreatedTeamsByName[$Team.name] = $existing
+        return $existing
+    } else {
+        $result = Create-Team -Org $Org -Name $Team.name -Description $Team.description -Privacy $Team.privacy -ParentTeamSlug $parentSlug
+        if ($result) {
+            $CreatedTeamsByName[$Team.name] = $result
+            # Add newly created team to ExistingTargetTeams for further use
+            $ExistingTargetTeams += $result
+            return $result
+        } else {
+            Write-Warning "Failed to create team '$($Team.name)' in target organization."
+            return $null
+        }
+    }
+}
+
+# ---- MAIN EXECUTION ----
 Write-Output "Starting GitHub Teams migration from '${SourceOrg}' to '${TargetOrg}'"
 
 if (-not (Test-Path $UserMappingCsv)) {
@@ -370,53 +397,18 @@ Write-Output "Checking existing teams in target organization..."
 $existingTargetTeams = Get-Teams -Org $TargetOrg
 Write-Output "Found $($existingTargetTeams.Count) existing teams in target organization."
 
-$processedTeams = @{}
+# RECURSIVE TEAM CREATION
+$allTeamsByName = @{}
+foreach ($t in $sourceTeams) { $allTeamsByName[$t.name] = $t }
+$createdTeamsByName = @{}
 
-# 5. Create all parent teams (PAT)
-Write-Output "Creating parent teams in target organization..."
-foreach ($team in $sourceTeams | Where-Object { -not $_.parent }) {
-    if ([string]::IsNullOrWhiteSpace($team.name)) { continue }
-    $existingTeam = $existingTargetTeams | Where-Object { $_.name -eq $team.name }
-    if ($existingTeam) {
-        $processedTeams[$team.name] = $existingTeam
-    } else {
-        $result = Create-Team -Org $TargetOrg -Name $team.name -Description $team.description -Privacy $team.privacy
-        if ($result) {
-            $processedTeams[$team.name] = $result
-        } else {
-            Write-Warning "Failed to create team '$($team.name)' in target organization."
-        }
-    }
-}
-
-Start-Sleep -Seconds 5
-$targetTeams = Get-Teams -Org $TargetOrg
-
-# 6. Create child teams (PAT)
-Write-Output "Creating child teams in target organization..."
-foreach ($team in $sourceTeams | Where-Object { $_.parent }) {
-    if ([string]::IsNullOrWhiteSpace($team.name)) { continue }
-    $existingTeam = $targetTeams | Where-Object { $_.name -eq $team.name }
-    if ($existingTeam) {
-        $processedTeams[$team.name] = $existingTeam
-    } else {
-        $parentTeamName = $team.parent.name
-        if ([string]::IsNullOrWhiteSpace($parentTeamName)) {
-            $result = Create-Team -Org $TargetOrg -Name $team.name -Description $team.description -Privacy $team.privacy
-        } else {
-            $parentTeam = $targetTeams | Where-Object { $_.name -eq $parentTeamName }
-            if ($parentTeam) {
-                $result = Create-Team -Org $TargetOrg -Name $team.name -Description $team.description -Privacy $team.privacy -ParentTeamSlug $parentTeam.slug
-            } else {
-                $result = Create-Team -Org $TargetOrg -Name $team.name -Description $team.description -Privacy $team.privacy
-            }
-        }
-        if ($result) {
-            $processedTeams[$team.name] = $result
-        } else {
-            Write-Warning "Failed to create child team '$($team.name)' in target organization."
-        }
-    }
+Write-Output "Recursively creating all teams in target organization..."
+foreach ($team in $sourceTeams) {
+    Ensure-TeamCreatedRecursive -Org $TargetOrg -Team $team `
+        -AllTeamsByName $allTeamsByName `
+        -CreatedTeamsByName $createdTeamsByName `
+        -ExistingTargetTeams $existingTargetTeams `
+        -DryRun:$DryRun
 }
 
 Start-Sleep -Seconds 5
@@ -484,7 +476,6 @@ do {
     }
 } while ($true)
 
-# For each member, get their public email (if available)
 foreach ($member in $targetOrgMembers) {
     $userInfo = gh api "users/$($member.login)" --jq '.' 2>$null | ConvertFrom-Json
     $member | Add-Member -NotePropertyName email -NotePropertyValue $userInfo.email
@@ -517,7 +508,6 @@ foreach ($sourceTeam in $sourceTeams) {
                 Write-Warning "Skipping member with empty login for team '$($targetTeam.name)'."
                 continue
             }
-            # Find the user's email from the userMapping CSV
             $mapping = $userMapping | Where-Object { $_.SourceUsername -eq $member.login }
             if ($mapping -and $mapping.UserEmail) {
                 $userEmail = $mapping.UserEmail
@@ -547,7 +537,6 @@ foreach ($sourceTeam in $sourceTeams) {
     }
 }
 
-# Output unmapped users report as CSV
 if ($unmappedUsers.Count -gt 0) {
     $unmappedPath = "unmapped_team_members.csv"
     $unmappedUsers | Export-Csv -Path $unmappedPath -NoTypeInformation
