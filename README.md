@@ -37,19 +37,65 @@ Key features include:
 
 ---
 
+## Required Secrets & Permissions
+
+### 1. Personal Access Tokens (PATs)
+
+You need two PATs:
+- `SOURCE_PAT` — for the source organization
+- `TARGET_PAT` — for the target organization
+
+**Required scopes for each PAT:**
+- `repo` — Full control of private repositories (includes all sub-scopes)
+- `read:org` — Read all organization membership, team, and repository information
+- `admin:org` — (optional, but recommended for full team management, especially if you need to create or manage teams)
+
+**How to Create a PAT:**
+1. Go to [GitHub Settings → Developer settings → Personal access tokens](https://github.com/settings/tokens)
+2. Click **Generate new token** (classic)
+3. Select the required scopes listed above
+4. Save the token and add it to your repository/organization secrets as `SOURCE_PAT` or `TARGET_PAT`
+
+**NOTE:** PATs should only be used with accounts that have admin or owner access to the respective organizations.
+
+---
+
+### 2. GitHub App
+
+The GitHub App is used for team membership and repo permissions assignment in the target org.
+
+**Required permissions when creating the app:**
+- **Repository permissions:**
+  - `Contents`: `Read and write`
+  - `Metadata`: `Read-only`
+- **Organization permissions:**
+  - `Members`: `Read-only` (to look up org members for mapping)
+  - `Administration`: `Read and write` (for managing teams and permissions)
+
+**How to Create a GitHub App:**
+1. Go to [GitHub Settings → Developer settings → GitHub Apps](https://github.com/settings/apps)
+2. Click **New GitHub App**
+3. Set the required permissions as above
+4. Allow the app to be installed on any organization, or restrict as needed
+5. Generate and download the **private key**
+6. Save the **App ID** and **private key**; add them as secrets (`GH_APP_ID`, `GH_APP_PRIVATE_KEY`)
+7. Install the app in your **target organization** and grant it access to **all repositories** (recommended) or only those you want to manage
+
+**References:**
+- [Creating a personal access token](https://docs.github.com/en/github/authenticating-to-github/creating-a-personal-access-token)
+- [Creating a GitHub App](https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app)
+- [GitHub App permissions](https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/selecting-permissions-for-a-github-app)
+
+---
+
 ## Secrets Used
 
-| Secret Name             | Used For                                  |
-|-------------------------|-------------------------------------------|
-| `SOURCE_PAT`            | PAT for reading teams/repos/members in the source org (needs `read:org`, `repo`, and team management permissions) |
-| `TARGET_PAT`            | PAT for creating teams/repos in the target org (same scopes as above) |
-| `GH_APP_ID`             | GitHub App ID (for organization-level repo/team/member management) |
-| `GH_APP_PRIVATE_KEY`    | GitHub App private key (for generating installation tokens) |
-
-**Note:**  
-- The GitHub App must be installed in the target organization with at least:  
-  - `Contents: Read & Write`, `Organization administration: Read & Write`, and `Members: Read` permissions.
-- PATs should have minimal required permissions and be stored securely as organization or repository secrets.
+| Secret Name             | Used For                                  | Where to Use                              |
+|-------------------------|-------------------------------------------|-------------------------------------------|
+| `SOURCE_PAT`            | PAT for source org (team/repo/member read) | GitHub Actions Secret                     |
+| `TARGET_PAT`            | PAT for target org (team/repo management) | GitHub Actions Secret                     |
+| `GH_APP_ID`             | GitHub App ID (for team/permission mgmt)  | GitHub Actions Secret                     |
+| `GH_APP_PRIVATE_KEY`    | GitHub App private key (for auth)         | GitHub Actions Secret                     |
 
 ---
 
