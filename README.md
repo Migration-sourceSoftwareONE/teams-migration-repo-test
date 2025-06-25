@@ -50,6 +50,15 @@ You need two PATs:
 - `read:org` — Read all organization membership, team, and repository information
 - `admin:org` — (optional, but recommended for full team management, especially if you need to create or manage teams)
 
+  #### Fine-grained PAT permissions:
+When creating a fine-grained PAT, set the following:
+- **Repository permissions:**
+  - Metadata: **Read**
+  - Actions: **Read and write**
+  - Administration: **Read and write**
+- **Organization permissions:**
+  - Members: **Read and write**
+
 **How to Create a PAT:**
 1. Go to [GitHub Settings → Developer settings → Personal access tokens](https://github.com/settings/tokens)
 2. Click **Generate new token** (classic)
