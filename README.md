@@ -64,13 +64,37 @@ You need two PATs:
 
 The GitHub App is used for team membership and repo permissions assignment in the target org.
 
-**Required permissions when creating the app:**
-- **Repository permissions:**
-  - `Contents`: `Read and write`
-  - `Metadata`: `Read-only`
-- **Organization permissions:**
-  - `Members`: `Read-only` (to look up org members for mapping)
-  - `Administration`: `Read and write` (for managing teams and permissions)
+## GitHub App Permissions Required
+
+When creating and installing your GitHub App for use with this migration workflow, you must grant it the following permissions:
+
+- **Read access**
+  - Metadata
+
+- **Read and write access**
+  - Actions
+  - Actions variables
+  - Administration
+  - Codespaces secrets
+  - Dependabot secrets
+  - Environments
+  - Members
+  - Organization actions variables
+  - Organization administration
+  - Organization codespaces secrets
+  - Organization dependabot secrets
+  - Organization secrets
+  - Organization self-hosted runners
+  - Secrets
+
+**How to set these permissions:**
+1. Go to [GitHub Settings → Developer settings → GitHub Apps](https://github.com/settings/apps)
+2. Click your app or create a new one.
+3. Under **Permissions & events**, assign the above permissions to your app.
+4. Complete the app creation and installation steps as described above.
+
+**Note:**  
+These permissions ensure the app can manage teams, members, repository permissions, secrets, and workflows required by the migration process.
 
 **How to Create a GitHub App:**
 1. Go to [GitHub Settings → Developer settings → GitHub Apps](https://github.com/settings/apps)
